@@ -317,6 +317,13 @@
         size, style
       );
     },
+    download: function (size, style) {
+      return icon(
+        '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>' +
+        '<polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>',
+        size, style
+      );
+    },
   };
 
   /* ---------- rendering ---------- */
@@ -514,117 +521,49 @@
     if (state.history.length === 0) return "";
     return (
       '<div>' +
-        '<div class="section-label">Completed matches</div>' +
+        '<div class="section-label" style="display:flex;align-items:center;justify-content:space-between">' +
+          '<span>Completed matches</span>' +
+          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download CSV</button>' +
+        '</div>' +
         '<div class="history-grid">' + state.history.map(buildHistoryCard).join("") + '</div>' +
       '</div>'
     );
   }
 
-  function buildHTML() {
-    var occupied = occupiedIds(state.courts);
-    var html = '<div class="container">';
-    html += buildHeader();
-    html += buildSetupPanel(occupied);
-    html += buildErrorBanner();
-    html += buildActionsRow();
-    if (state.sessionStarted) {
-      html += buildCourtsGrid();
-      html += buildWaitingSection(occupied);
-      html += buildHistorySection();
+  function csvEscape(val) {
+    var s = String(val);
+    if (/[",\n]/.test(s)) {
+      s = '"' + s.replace(/"/g, '""') + '"';
     }
-    html += '</div>';
-    return html;
+    return s;
   }
 
-  var root;
-  var focusMemo = null; // remembers which input had focus + cursor position across re-renders
-
-  function captureFocus() {
-    var el = document.activeElement;
-    if (el && root.contains(el) && (el.id === "name-input" || el.id === "num-courts-input" || el.dataset.bind === "score")) {
-      focusMemo = {
-        id: el.id || null,
-        ci: el.dataset ? el.dataset.ci : null,
-        team: el.dataset ? el.dataset.team : null,
-        selectionStart: el.selectionStart,
-        selectionEnd: el.selectionEnd,
-      };
-    } else {
-      focusMemo = null;
-    }
-  }
-
-  function restoreFocus() {
-    if (!focusMemo) return;
-    var el = null;
-    if (focusMemo.id) {
-      el = document.getElementById(focusMemo.id);
-    } else if (focusMemo.ci !== null) {
-      el = root.querySelector(
-        '[data-bind="score"][data-ci="' + focusMemo.ci + '"][data-team="' + focusMemo.team + '"]'
-      );
-    }
-    if (el) {
-      el.focus();
-      if (typeof focusMemo.selectionStart === "number" && el.setSelectionRange) {
-        try {
-          el.setSelectionRange(focusMemo.selectionStart, focusMemo.selectionEnd);
-        } catch (e) {
-          /* ignore inputs that don't support selection (e.g. type=number in some browsers) */
-        }
-      }
-    }
-  }
-
-  function render() {
-    captureFocus();
-    root.innerHTML = buildHTML();
-    restoreFocus();
-  }
-
-  /* ---------- event delegation ---------- */
-  function handleClick(e) {
-    var btn = e.target.closest("[data-action]");
-    if (!btn) return;
-    var action = btn.dataset.action;
-    var ci = btn.dataset.ci !== undefined ? Number(btn.dataset.ci) : undefined;
-    if (action === "add-player") addPlayer();
-    else if (action === "remove-player") removePlayer(btn.dataset.id);
-    else if (action === "start-session") startSession();
-    else if (action === "reset-all") resetAll();
-    else if (action === "ask-finish") askFinishCourt(ci);
-    else if (action === "cancel-finish") cancelFinishCourt(ci);
-    else if (action === "proceed-score") proceedToScore(ci);
-    else if (action === "save-score") saveScoreAndFinish(ci);
-    else if (action === "generate-next") generateNextForCourt(ci);
-  }
-
-  function handleInput(e) {
-    var t = e.target;
-    if (t.id === "name-input") {
-      state.nameInput = t.value;
-    } else if (t.id === "num-courts-input") {
-      state.numCourts = Math.max(1, parseInt(t.value, 10) || 1);
-    } else if (t.dataset && t.dataset.bind === "score") {
-      var ci = t.dataset.ci;
-      var team = t.dataset.team;
-      if (!state.scoreDraft[ci]) state.scoreDraft[ci] = { a: "", b: "" };
-      state.scoreDraft[ci][team] = t.value;
-    }
-  }
-
-  function handleKeydown(e) {
-    if (e.target && e.target.id === "name-input" && e.key === "Enter") {
-      e.preventDefault();
-      addPlayer();
-    }
-  }
-
-  document.addEventListener("DOMContentLoaded", function () {
-    root = document.getElementById("root");
-    root.addEventListener("click", handleClick);
-    root.addEventListener("input", handleInput);
-    root.addEventListener("keydown", handleKeydown);
-    render();
-  });
-})();
+  function downloadHistory() {
+    if (state.history.length === 0) return;
+    var rows = [["Court", "Match #", "Team A", "Team B", "Score A", "Score B", "Winner"]];
+    // history is stored newest-first; export oldest-first so it reads top-to-bottom chronologically
+    state.history.slice().reverse().forEach(function (h) {
+      var winnerNames = h.winner === "A"
+        ? h.teamA.map(function (p) { return p.name; }).join(" & ")
+        : h.teamB.map(function (p) { return p.name; }).join(" & ");
+      rows.push([
+        h.court + 1,
+        h.matchNum,
+        h.teamA.map(function (p) { return p.name; }).join(" & "),
+        h.teamB.map(function (p) { return p.name; }).join(" & "),
+        h.scoreA,
+        h.scoreB,
+        winnerNames,
+      ]);
+    });
+    var csv = rows.map(function (r) { return r.map(csvEscape).join(","); }).join("\r\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    a.href = url;
+    a.download = "match-history-" + stamp + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObject
