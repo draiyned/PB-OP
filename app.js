@@ -20,9 +20,36 @@
     history: [],
     error: "",
     confirmState: {},
+    confirmEndSession: false,
     scoreDraft: {},
     nameInput: "",
   };
+
+  /* ---------- toast notification ---------- */
+  var toastRoot = null;
+  var toastTimer = null;
+
+  function showToast(message, iconFn) {
+    if (!toastRoot) return;
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    var el = document.createElement("div");
+    el.className = "toast";
+    el.innerHTML = (iconFn ? iconFn(14) : "") + "<span>" + escapeHtml(message) + "</span>";
+    toastRoot.innerHTML = "";
+    toastRoot.appendChild(el);
+    // force reflow so the transition to toast-visible actually animates
+    void el.offsetWidth;
+    el.classList.add("toast-visible");
+    toastTimer = setTimeout(function () {
+      el.classList.remove("toast-visible");
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 200);
+    }, 2600);
+  }
 
   /* ---------- helpers ---------- */
   function escapeHtml(str) {
@@ -150,6 +177,7 @@
     state.history = [];
     state.sessionStarted = true;
     render();
+    showToast("Session started", ICONS.check);
   }
 
   function askFinishCourt(ci) {
@@ -246,6 +274,16 @@
     render();
   }
 
+  function askEndSession() {
+    state.confirmEndSession = true;
+    render();
+  }
+
+  function cancelEndSession() {
+    state.confirmEndSession = false;
+    render();
+  }
+
   function resetAll() {
     state.sessionStarted = false;
     state.courts = [];
@@ -262,6 +300,7 @@
     state.partnerHistory = {};
     state.error = "";
     state.confirmState = {};
+    state.confirmEndSession = false;
     state.scoreDraft = {};
     render();
   }
@@ -342,7 +381,7 @@
           '<circle cx="28" cy="28" r="4" fill="' + BALL_COLOR + '"/>' +
         '</svg>' +
         '<div>' +
-          '<h1 class="app-title">Open Play Rotator</h1>' +
+          '<h1 class="app-title">Open Play Generator</h1>' +
           '<p class="app-subtitle">Each court runs on its own clock — mark a court finished and it refills instantly.</p>' +
         '</div>' +
       '</div>'
@@ -393,9 +432,20 @@
         '</div>'
       );
     }
+    if (state.confirmEndSession) {
+      return (
+        '<div class="actions-row confirm-block" style="width:100%">' +
+          '<div class="confirm-text">End this session? Courts and match history will be cleared.</div>' +
+          '<div class="btn-row">' +
+            '<button type="button" class="btn-small" data-action="reset-all">' + ICONS.check(13) + ' Yes, end session</button>' +
+            '<button type="button" class="btn-ghost-small" data-action="cancel-end-session">Cancel</button>' +
+          '</div>' +
+        '</div>'
+      );
+    }
     return (
       '<div class="actions-row">' +
-        '<button type="button" class="btn-secondary" data-action="reset-all">' + ICONS.rotateCcw(14) + ' End session</button>' +
+        '<button type="button" class="btn-secondary" data-action="ask-end-session">' + ICONS.rotateCcw(14) + ' End session</button>' +
       '</div>'
     );
   }
@@ -566,4 +616,118 @@
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObject
+    URL.revokeObjectURL(url);
+  }
+
+  function buildHTML() {
+    var occupied = occupiedIds(state.courts);
+    var html = '<div class="container">';
+    html += buildHeader();
+    html += buildSetupPanel(occupied);
+    html += buildErrorBanner();
+    html += buildActionsRow();
+    if (state.sessionStarted) {
+      html += buildCourtsGrid();
+      html += buildWaitingSection(occupied);
+      html += buildHistorySection();
+    }
+    html += '</div>';
+    return html;
+  }
+
+  var root;
+  var focusMemo = null; // remembers which input had focus + cursor position across re-renders
+
+  function captureFocus() {
+    var el = document.activeElement;
+    if (el && root.contains(el) && (el.id === "name-input" || el.id === "num-courts-input" || el.dataset.bind === "score")) {
+      focusMemo = {
+        id: el.id || null,
+        ci: el.dataset ? el.dataset.ci : null,
+        team: el.dataset ? el.dataset.team : null,
+        selectionStart: el.selectionStart,
+        selectionEnd: el.selectionEnd,
+      };
+    } else {
+      focusMemo = null;
+    }
+  }
+
+  function restoreFocus() {
+    if (!focusMemo) return;
+    var el = null;
+    if (focusMemo.id) {
+      el = document.getElementById(focusMemo.id);
+    } else if (focusMemo.ci !== null) {
+      el = root.querySelector(
+        '[data-bind="score"][data-ci="' + focusMemo.ci + '"][data-team="' + focusMemo.team + '"]'
+      );
+    }
+    if (el) {
+      el.focus();
+      if (typeof focusMemo.selectionStart === "number" && el.setSelectionRange) {
+        try {
+          el.setSelectionRange(focusMemo.selectionStart, focusMemo.selectionEnd);
+        } catch (e) {
+          /* ignore inputs that don't support selection (e.g. type=number in some browsers) */
+        }
+      }
+    }
+  }
+
+  function render() {
+    captureFocus();
+    root.innerHTML = buildHTML();
+    restoreFocus();
+  }
+
+  /* ---------- event delegation ---------- */
+  function handleClick(e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    var action = btn.dataset.action;
+    var ci = btn.dataset.ci !== undefined ? Number(btn.dataset.ci) : undefined;
+    if (action === "add-player") addPlayer();
+    else if (action === "remove-player") removePlayer(btn.dataset.id);
+    else if (action === "start-session") startSession();
+    else if (action === "ask-end-session") askEndSession();
+    else if (action === "cancel-end-session") cancelEndSession();
+    else if (action === "reset-all") resetAll();
+    else if (action === "ask-finish") askFinishCourt(ci);
+    else if (action === "cancel-finish") cancelFinishCourt(ci);
+    else if (action === "proceed-score") proceedToScore(ci);
+    else if (action === "save-score") saveScoreAndFinish(ci);
+    else if (action === "generate-next") generateNextForCourt(ci);
+    else if (action === "download-history") downloadHistory();
+  }
+
+  function handleInput(e) {
+    var t = e.target;
+    if (t.id === "name-input") {
+      state.nameInput = t.value;
+    } else if (t.id === "num-courts-input") {
+      state.numCourts = Math.max(1, parseInt(t.value, 10) || 1);
+    } else if (t.dataset && t.dataset.bind === "score") {
+      var ci = t.dataset.ci;
+      var team = t.dataset.team;
+      if (!state.scoreDraft[ci]) state.scoreDraft[ci] = { a: "", b: "" };
+      state.scoreDraft[ci][team] = t.value;
+    }
+  }
+
+  function handleKeydown(e) {
+    if (e.target && e.target.id === "name-input" && e.key === "Enter") {
+      e.preventDefault();
+      addPlayer();
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    root = document.getElementById("root");
+    toastRoot = document.getElementById("toast-root");
+    root.addEventListener("click", handleClick);
+    root.addEventListener("input", handleInput);
+    root.addEventListener("keydown", handleKeydown);
+    render();
+  });
+})();
