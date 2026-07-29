@@ -381,7 +381,7 @@
           '<circle cx="28" cy="28" r="4" fill="' + BALL_COLOR + '"/>' +
         '</svg>' +
         '<div>' +
-          '<h1 class="app-title">Open Play Generator By DRAP</h1>' +
+          '<h1 class="app-title">Open Play Generator By draiyned</h1>' +
           '<p class="app-subtitle">Each court runs on its own clock and mark a court finished and it refills instantly.</p>' +
         '</div>' +
       '</div>'
