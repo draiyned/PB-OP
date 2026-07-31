@@ -58,17 +58,28 @@
     });
   }
 
+  function shuffle(arr) {
+    var a = arr.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var tmp = a[i];
+      a[i] = a[j];
+      a[j] = tmp;
+    }
+    return a;
+  }
+
   function pairKey(a, b) {
     return [a, b].sort().join("::");
   }
 
   function bestTeamSplit(four, partnerHistory) {
     var p0 = four[0], p1 = four[1], p2 = four[2], p3 = four[3];
-    var options = [
+    var options = shuffle([
       { teamA: [p0, p1], teamB: [p2, p3] },
       { teamA: [p0, p2], teamB: [p1, p3] },
       { teamA: [p0, p3], teamB: [p1, p2] },
-    ];
+    ]);
     var best = options[0];
     var bestScore = Infinity;
     options.forEach(function (opt) {
@@ -80,7 +91,8 @@
         best = opt;
       }
     });
-    return best;
+    // randomize which side of the winning split is "Team A" vs "Team B"
+    return Math.random() < 0.5 ? best : { teamA: best.teamB, teamB: best.teamA };
   }
 
   function occupiedIds(courtsArr) {
@@ -95,7 +107,7 @@
   }
 
   function pickFour(waitingPool, gp, bo) {
-    var sorted = waitingPool.slice().sort(function (a, b) {
+    var sorted = shuffle(waitingPool).sort(function (a, b) {
       var diff = (gp[a.id] || 0) - (gp[b.id] || 0);
       if (diff !== 0) return diff;
       return (bo[a.id] || 0) - (bo[b.id] || 0);
@@ -381,8 +393,8 @@
           '<circle cx="28" cy="28" r="4" fill="' + BALL_COLOR + '"/>' +
         '</svg>' +
         '<div>' +
-          '<h1 class="app-title">Open Play Generator By draiyned</h1>' +
-          '<p class="app-subtitle">Each court runs on its own clock and mark a court finished and it refills instantly.</p>' +
+          '<h1 class="app-title">Open Play Generator</h1>' +
+          '<p class="app-subtitle">Created by draiyned</p>' +
         '</div>' +
       '</div>'
     );
@@ -544,6 +556,84 @@
     );
   }
 
+  function computeStandings() {
+    var stats = {};
+    state.players.forEach(function (p) {
+      stats[p.id] = { id: p.id, name: p.name, matches: 0, wins: 0, losses: 0, pf: 0, pa: 0 };
+    });
+    state.history.forEach(function (h) {
+      var aWon = h.winner === "A";
+      h.teamA.forEach(function (p) {
+        var s = stats[p.id];
+        if (!s) return;
+        s.matches += 1;
+        s.pf += h.scoreA;
+        s.pa += h.scoreB;
+        if (aWon) s.wins += 1; else s.losses += 1;
+      });
+      h.teamB.forEach(function (p) {
+        var s = stats[p.id];
+        if (!s) return;
+        s.matches += 1;
+        s.pf += h.scoreB;
+        s.pa += h.scoreA;
+        if (aWon) s.losses += 1; else s.wins += 1;
+      });
+    });
+    var list = Object.keys(stats).map(function (id) { return stats[id]; });
+    list.forEach(function (s) {
+      s.diff = s.pf - s.pa;
+      s.winRate = s.matches > 0 ? s.wins / s.matches : 0;
+    });
+    // Rank by wins, then win rate, then point differential, then name —
+    // point differential is what keeps players with identical win/loss
+    // records (e.g. a three-way tie) from rendering in an arbitrary order.
+    list.sort(function (a, b) {
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      if (b.diff !== a.diff) return b.diff - a.diff;
+      return a.name.localeCompare(b.name);
+    });
+    return list;
+  }
+
+  function buildStandingsRow(s, rank) {
+    var pct = Math.round(s.winRate * 100);
+    var diffText = (s.diff > 0 ? "+" : "") + s.diff;
+    var diffClass = s.diff > 0 ? "pos" : (s.diff < 0 ? "neg" : "");
+    return (
+      '<div class="standings-row">' +
+        '<span class="standings-rank">' + rank + '</span>' +
+        '<span class="standings-name">' + escapeHtml(s.name) + '</span>' +
+        '<span class="standings-record">' + s.wins + '-' + s.losses + '</span>' +
+        '<span class="standings-matches">' + s.matches + '</span>' +
+        '<span class="standings-pct">' + pct + '%</span>' +
+        '<span class="standings-diff ' + diffClass + '">' + diffText + '</span>' +
+      '</div>'
+    );
+  }
+
+  function buildStandingsSection() {
+    if (state.history.length === 0) return "";
+    var standings = computeStandings();
+    return (
+      '<div class="standings-section">' +
+        '<div class="section-label">Standings</div>' +
+        '<div class="standings-table">' +
+          '<div class="standings-row standings-header">' +
+            '<span class="standings-rank">#</span>' +
+            '<span class="standings-name">Player</span>' +
+            '<span class="standings-record">W-L</span>' +
+            '<span class="standings-matches">Games</span>' +
+            '<span class="standings-pct">Win%</span>' +
+            '<span class="standings-diff">+/-</span>' +
+          '</div>' +
+          standings.map(function (s, i) { return buildStandingsRow(s, i + 1); }).join("") +
+        '</div>' +
+      '</div>'
+    );
+  }
+
   function buildHistoryCard(h) {
     var winA = h.winner === "A";
     var winB = h.winner === "B";
@@ -573,7 +663,7 @@
       '<div>' +
         '<div class="section-label" style="display:flex;align-items:center;justify-content:space-between">' +
           '<span>Completed matches</span>' +
-          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download CSV</button>' +
+          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download </button>' +
         '</div>' +
         '<div class="history-grid">' + state.history.map(buildHistoryCard).join("") + '</div>' +
       '</div>'
@@ -629,6 +719,7 @@
     if (state.sessionStarted) {
       html += buildCourtsGrid();
       html += buildWaitingSection(occupied);
+      html += buildStandingsSection();
       html += buildHistorySection();
     }
     html += '</div>';
