@@ -1,4 +1,4 @@
-# Open Play Rotator
+# Open Play Generator By draiyned 
 
 A pickleball open-play court rotation manager. Pure HTML, CSS, and vanilla JavaScript —
 no frameworks, no build step, no CDN, no dependencies of any kind.
