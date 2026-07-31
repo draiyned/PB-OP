@@ -162,6 +162,47 @@ button, input {
   color: #F0B896;
 }
 
+/* ---------- toast notification ---------- */
+#toast-root {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  background: #1E4137;
+  color: #F5EFD9;
+  border: 1px solid rgba(232, 209, 68, 0.4);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.3);
+  opacity: 0;
+  transform: translateY(-8px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+}
+
+.toast.toast-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast .icon {
+  color: #E8D144;
+  flex-shrink: 0;
+}
+
 /* ---------- action buttons ---------- */
 .actions-row {
   display: flex;
@@ -370,6 +411,59 @@ button, input {
   font-size: 0.875rem;
   background: rgba(245, 239, 217, 0.08);
 }
+
+/* ---------- standings ---------- */
+.standings-section { margin-bottom: 32px; }
+
+.standings-table {
+  border-radius: 8px;
+  overflow: hidden;
+  background: #3D3626;
+}
+
+.standings-row {
+  display: grid;
+  grid-template-columns: 28px 1fr 48px 36px 48px 52px;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  font-size: 0.8125rem;
+  border-top: 1px solid rgba(245, 239, 217, 0.06);
+}
+.standings-row:first-child { border-top: none; }
+
+.standings-header {
+  font-size: 0.625rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  opacity: 0.5;
+  font-weight: 600;
+}
+
+.standings-rank {
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+}
+
+.standings-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+}
+
+.standings-record,
+.standings-matches,
+.standings-pct,
+.standings-diff {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.85;
+}
+
+.standings-diff.pos { color: #8FCB9B; }
+.standings-diff.neg { color: #E08585; }
 
 /* ---------- match history ---------- */
 .history-grid {
