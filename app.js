@@ -788,15 +788,15 @@
         partnerHistory: state.partnerHistory,
         history: state.history,
       };
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
     } catch (e) {
-      // localStorage unavailable (private browsing, quota, etc.) — fail silently
+      // sessionStorage unavailable (private browsing, quota, etc.) — fail silently
     }
   }
 
   function loadState() {
     try {
-      var raw = localStorage.getItem(STORAGE_KEY);
+      var raw = sessionStorage.getItem(STORAGE_KEY);
       if (!raw) return;
       var saved = JSON.parse(raw);
       if (!saved || typeof saved !== "object") return;
