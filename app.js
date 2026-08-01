@@ -585,4 +585,306 @@
         if (aWon) s.losses += 1; else s.wins += 1;
       });
     });
-    var list = 
+    var list = Object.keys(stats).map(function (id) { return stats[id]; });
+    list.forEach(function (s) {
+      s.diff = s.pf - s.pa;
+      s.winRate = s.matches > 0 ? s.wins / s.matches : 0;
+    });
+    // Rank by wins, then win rate, then point differential, then name —
+    // point differential is what keeps players with identical win/loss
+    // records (e.g. a three-way tie) from rendering in an arbitrary order.
+    list.sort(function (a, b) {
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      if (b.diff !== a.diff) return b.diff - a.diff;
+      return a.name.localeCompare(b.name);
+    });
+    return list;
+  }
+
+  function buildStandingsRow(s, rank) {
+    var pct = Math.round(s.winRate * 100);
+    var diffText = (s.diff > 0 ? "+" : "") + s.diff;
+    var diffClass = s.diff > 0 ? "pos" : (s.diff < 0 ? "neg" : "");
+    return (
+      '<div class="standings-row">' +
+        '<span class="standings-rank">' + rank + '</span>' +
+        '<span class="standings-name">' + escapeHtml(s.name) + '</span>' +
+        '<span class="standings-record">' + s.wins + '-' + s.losses + '</span>' +
+        '<span class="standings-matches">' + s.matches + '</span>' +
+        '<span class="standings-pct">' + pct + '%</span>' +
+        '<span class="standings-diff ' + diffClass + '">' + diffText + '</span>' +
+      '</div>'
+    );
+  }
+
+  function buildStandingsSection() {
+    if (state.history.length === 0) return "";
+    var standings = computeStandings();
+    return (
+      '<div class="standings-section">' +
+        '<div class="section-label">Standings</div>' +
+        '<div class="standings-table">' +
+          '<div class="standings-row standings-header">' +
+            '<span class="standings-rank">#</span>' +
+            '<span class="standings-name">Player</span>' +
+            '<span class="standings-record">W-L</span>' +
+            '<span class="standings-matches">MP</span>' +
+            '<span class="standings-pct">Win%</span>' +
+            '<span class="standings-diff">+/-</span>' +
+          '</div>' +
+          standings.map(function (s, i) { return buildStandingsRow(s, i + 1); }).join("") +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function buildHistoryCard(h) {
+    var winA = h.winner === "A";
+    var winB = h.winner === "B";
+    return (
+      '<div class="history-card">' +
+        '<div class="net-line"></div>' +
+        '<div class="history-head">' +
+          '<span class="history-court-label">Court ' + (h.court + 1) + '</span>' +
+          '<span class="history-match-num">' + ICONS.check(11) + ' match ' + h.matchNum + '</span>' +
+        '</div>' +
+        '<div class="history-team-row' + (winA ? " winner" : "") + '">' +
+          '<span class="history-team-name">' + (winA ? ICONS.trophy(12, "color:" + BALL_COLOR) : "") + teamNames(h.teamA) + '</span>' +
+          '<span class="history-score">' + h.scoreA + '</span>' +
+        '</div>' +
+        '<div class="history-vs">vs</div>' +
+        '<div class="history-team-row' + (winB ? " winner" : "") + '">' +
+          '<span class="history-team-name">' + (winB ? ICONS.trophy(12, "color:" + BALL_COLOR) : "") + teamNames(h.teamB) + '</span>' +
+          '<span class="history-score">' + h.scoreB + '</span>' +
+        '</div>' +
+      '</div>'
+    );
+  }
+
+  function buildHistorySection() {
+    if (state.history.length === 0) return "";
+    return (
+      '<div>' +
+        '<div class="section-label" style="display:flex;align-items:center;justify-content:space-between">' +
+          '<span>Completed matches</span>' +
+          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download CSV</button>' +
+        '</div>' +
+        '<div class="history-grid">' + state.history.map(buildHistoryCard).join("") + '</div>' +
+      '</div>'
+    );
+  }
+
+  function csvEscape(val) {
+    var s = String(val);
+    if (/[",\n]/.test(s)) {
+      s = '"' + s.replace(/"/g, '""') + '"';
+    }
+    return s;
+  }
+
+  function downloadHistory() {
+    if (state.history.length === 0) return;
+    var rows = [["Court", "Match #", "Team A", "Team B", "Score A", "Score B", "Winner"]];
+    // history is stored newest-first; export oldest-first so it reads top-to-bottom chronologically
+    state.history.slice().reverse().forEach(function (h) {
+      var winnerNames = h.winner === "A"
+        ? h.teamA.map(function (p) { return p.name; }).join(" & ")
+        : h.teamB.map(function (p) { return p.name; }).join(" & ");
+      rows.push([
+        h.court + 1,
+        h.matchNum,
+        h.teamA.map(function (p) { return p.name; }).join(" & "),
+        h.teamB.map(function (p) { return p.name; }).join(" & "),
+        h.scoreA,
+        h.scoreB,
+        winnerNames,
+      ]);
+    });
+    var csv = rows.map(function (r) { return r.map(csvEscape).join(","); }).join("\r\n");
+    var blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement("a");
+    var stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
+    a.href = url;
+    a.download = "match-history-" + stamp + ".csv";
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function buildHTML() {
+    var occupied = occupiedIds(state.courts);
+    var html = '<div class="container">';
+    html += buildHeader();
+    html += buildSetupPanel(occupied);
+    html += buildErrorBanner();
+    html += buildActionsRow();
+    if (state.sessionStarted) {
+      html += buildCourtsGrid();
+      html += buildWaitingSection(occupied);
+      html += buildStandingsSection();
+      html += buildHistorySection();
+    }
+    html += '</div>';
+    return html;
+  }
+
+  var root;
+  var focusMemo = null; // remembers which input had focus + cursor position across re-renders
+
+  function captureFocus() {
+    var el = document.activeElement;
+    if (el && root.contains(el) && (el.id === "name-input" || el.id === "num-courts-input" || el.dataset.bind === "score")) {
+      focusMemo = {
+        id: el.id || null,
+        ci: el.dataset ? el.dataset.ci : null,
+        team: el.dataset ? el.dataset.team : null,
+        selectionStart: el.selectionStart,
+        selectionEnd: el.selectionEnd,
+      };
+    } else {
+      focusMemo = null;
+    }
+  }
+
+  function restoreFocus() {
+    if (!focusMemo) return;
+    var el = null;
+    if (focusMemo.id) {
+      el = document.getElementById(focusMemo.id);
+    } else if (focusMemo.ci !== null) {
+      el = root.querySelector(
+        '[data-bind="score"][data-ci="' + focusMemo.ci + '"][data-team="' + focusMemo.team + '"]'
+      );
+    }
+    if (el) {
+      el.focus();
+      if (typeof focusMemo.selectionStart === "number" && el.setSelectionRange) {
+        try {
+          el.setSelectionRange(focusMemo.selectionStart, focusMemo.selectionEnd);
+        } catch (e) {
+          /* ignore inputs that don't support selection (e.g. type=number in some browsers) */
+        }
+      }
+    }
+  }
+
+  /* ---------- persistence ---------- */
+  var BASE_STORAGE_KEY = "open-play-generator-state-v1";
+  var tabId = null;
+
+  function getTabId() {
+    if (tabId) return tabId;
+    try {
+      var hs = window.history.state;
+      if (hs && hs.opgTabId) {
+        tabId = hs.opgTabId;
+      } else {
+        tabId = "opg-tab-" + Date.now() + "-" + Math.random().toString(36).slice(2, 9);
+        var newState = Object.assign({}, hs || {}, { opgTabId: tabId });
+        window.history.replaceState(newState, "");
+      }
+    } catch (e) {
+      tabId = "opg-tab-fallback";
+    }
+    return tabId;
+  }
+
+  function storageKey() {
+    return BASE_STORAGE_KEY + ":" + getTabId();
+  }
+
+  function saveState() {
+    try {
+      var toSave = {
+        players: state.players,
+        numCourts: state.numCourts,
+        sessionStarted: state.sessionStarted,
+        courts: state.courts,
+        matchCounts: state.matchCounts,
+        gamesPlayed: state.gamesPlayed,
+        benchOrder: state.benchOrder,
+        turnCounter: state.turnCounter,
+        partnerHistory: state.partnerHistory,
+        history: state.history,
+      };
+      sessionStorage.setItem(storageKey(), JSON.stringify(toSave));
+    } catch (e) {
+      // sessionStorage unavailable (private browsing, quota, etc.) — fail silently
+    }
+  }
+
+  function loadState() {
+    try {
+      var raw = sessionStorage.getItem(storageKey());
+      if (!raw) return;
+      var saved = JSON.parse(raw);
+      if (!saved || typeof saved !== "object") return;
+      Object.keys(saved).forEach(function (key) {
+        state[key] = saved[key];
+      });
+    } catch (e) {
+      // corrupted or inaccessible storage — start fresh
+    }
+  }
+
+  function render() {
+    captureFocus();
+    root.innerHTML = buildHTML();
+    restoreFocus();
+    saveState();
+  }
+
+  /* ---------- event delegation ---------- */
+  function handleClick(e) {
+    var btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    var action = btn.dataset.action;
+    var ci = btn.dataset.ci !== undefined ? Number(btn.dataset.ci) : undefined;
+    if (action === "add-player") addPlayer();
+    else if (action === "remove-player") removePlayer(btn.dataset.id);
+    else if (action === "start-session") startSession();
+    else if (action === "ask-end-session") askEndSession();
+    else if (action === "cancel-end-session") cancelEndSession();
+    else if (action === "reset-all") resetAll();
+    else if (action === "ask-finish") askFinishCourt(ci);
+    else if (action === "cancel-finish") cancelFinishCourt(ci);
+    else if (action === "proceed-score") proceedToScore(ci);
+    else if (action === "save-score") saveScoreAndFinish(ci);
+    else if (action === "generate-next") generateNextForCourt(ci);
+    else if (action === "download-history") downloadHistory();
+  }
+
+  function handleInput(e) {
+    var t = e.target;
+    if (t.id === "name-input") {
+      state.nameInput = t.value;
+    } else if (t.id === "num-courts-input") {
+      state.numCourts = Math.max(1, parseInt(t.value, 10) || 1);
+    } else if (t.dataset && t.dataset.bind === "score") {
+      var ci = t.dataset.ci;
+      var team = t.dataset.team;
+      if (!state.scoreDraft[ci]) state.scoreDraft[ci] = { a: "", b: "" };
+      state.scoreDraft[ci][team] = t.value;
+    }
+  }
+
+  function handleKeydown(e) {
+    if (e.target && e.target.id === "name-input" && e.key === "Enter") {
+      e.preventDefault();
+      addPlayer();
+    }
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    root = document.getElementById("root");
+    toastRoot = document.getElementById("toast-root");
+    root.addEventListener("click", handleClick);
+    root.addEventListener("input", handleInput);
+    root.addEventListener("keydown", handleKeydown);
+    loadState();
+    render();
+  });
+})();
