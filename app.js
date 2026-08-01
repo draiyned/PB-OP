@@ -9,7 +9,7 @@
   /* ---------- state ---------- */
   var state = {
     players: [],
-    numCourts: 1,
+    numCourts: 2,
     sessionStarted: false,
     courts: [],
     matchCounts: [],
@@ -394,7 +394,7 @@
         '</svg>' +
         '<div>' +
           '<h1 class="app-title">Open Play Generator</h1>' +
-          '<p class="app-subtitle">Created by draiyned</p>' +
+          '<p class="app-subtitle">Each court runs on its own clock — mark a court finished and it refills instantly.</p>' +
         '</div>' +
       '</div>'
     );
@@ -624,7 +624,7 @@
             '<span class="standings-rank">#</span>' +
             '<span class="standings-name">Player</span>' +
             '<span class="standings-record">W-L</span>' +
-            '<span class="standings-matches">Games</span>' +
+            '<span class="standings-matches">MP</span>' +
             '<span class="standings-pct">Win%</span>' +
             '<span class="standings-diff">+/-</span>' +
           '</div>' +
@@ -663,7 +663,7 @@
       '<div>' +
         '<div class="section-label" style="display:flex;align-items:center;justify-content:space-between">' +
           '<span>Completed matches</span>' +
-          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download </button>' +
+          '<button type="button" class="btn-ghost-small" data-action="download-history">' + ICONS.download(12) + ' Download CSV</button>' +
         '</div>' +
         '<div class="history-grid">' + state.history.map(buildHistoryCard).join("") + '</div>' +
       '</div>'
@@ -766,10 +766,48 @@
     }
   }
 
+  /* ---------- persistence ---------- */
+  var STORAGE_KEY = "open-play-generator-state-v1";
+
+  function saveState() {
+    try {
+      var toSave = {
+        players: state.players,
+        numCourts: state.numCourts,
+        sessionStarted: state.sessionStarted,
+        courts: state.courts,
+        matchCounts: state.matchCounts,
+        gamesPlayed: state.gamesPlayed,
+        benchOrder: state.benchOrder,
+        turnCounter: state.turnCounter,
+        partnerHistory: state.partnerHistory,
+        history: state.history,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(toSave));
+    } catch (e) {
+      // localStorage unavailable (private browsing, quota, etc.) — fail silently
+    }
+  }
+
+  function loadState() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      var saved = JSON.parse(raw);
+      if (!saved || typeof saved !== "object") return;
+      Object.keys(saved).forEach(function (key) {
+        state[key] = saved[key];
+      });
+    } catch (e) {
+      // corrupted or inaccessible storage — start fresh
+    }
+  }
+
   function render() {
     captureFocus();
     root.innerHTML = buildHTML();
     restoreFocus();
+    saveState();
   }
 
   /* ---------- event delegation ---------- */
@@ -819,6 +857,7 @@
     root.addEventListener("click", handleClick);
     root.addEventListener("input", handleInput);
     root.addEventListener("keydown", handleKeydown);
+    loadState();
     render();
   });
 })();
