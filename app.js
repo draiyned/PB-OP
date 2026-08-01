@@ -9,7 +9,7 @@
   /* ---------- state ---------- */
   var state = {
     players: [],
-    numCourts: 2,
+    numCourts: 1,
     sessionStarted: false,
     courts: [],
     matchCounts: [],
