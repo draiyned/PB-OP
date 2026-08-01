@@ -462,7 +462,7 @@
     );
   }
 
-  function buildCourtCard(court, ci) {
+  function buildCourtCard(court, ci, freeCount) {
     var activeCls = court ? " active" : "";
     var inner = "";
 
@@ -516,11 +516,12 @@
             ICONS.check(13) + ' Finished — next match</button>'
         );
       }
-    } else if (state.confirmState[ci] === "confirmNext") {
+    } else if (freeCount >= 4) {
       inner += (
         '<div>' +
-          '<div class="confirm-text">Match logged. Generate the next match?</div>' +
-          '<button type="button" class="btn-small" style="margin-top:0" data-action="generate-next" data-ci="' + ci + '">' +
+          '<div class="court-head"><span class="court-label">Court ' + (ci + 1) + '</span></div>' +
+          '<div class="confirm-text">Ready for the next match.</div>' +
+          '<button type="button" class="btn-small" data-action="generate-next" data-ci="' + ci + '">' +
             ICONS.shuffle(13) + ' Generate next match</button>' +
         '</div>'
       );
@@ -535,7 +536,11 @@
   }
 
   function buildCourtsGrid() {
-    return '<div class="courts-grid">' + state.courts.map(buildCourtCard).join("") + '</div>';
+    var occupied = occupiedIds(state.courts);
+    var freeCount = state.players.filter(function (p) { return !occupied[p.id]; }).length;
+    return '<div class="courts-grid">' + state.courts.map(function (court, ci) {
+      return buildCourtCard(court, ci, freeCount);
+    }).join("") + '</div>';
   }
 
   function buildWaitingSection(occupied) {
