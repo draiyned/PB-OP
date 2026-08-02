@@ -28,7 +28,7 @@ npx serve .
 ## Deploy to GitHub Pages
 1. Push `index.html`, `style.css`, and `app.js` to a repo (keep them at the repo root, or in `/docs` if that's your configured Pages folder).
 2. In the repo: **Settings → Pages → Source**, pick the branch/folder containing `index.html`.
-3. Your site will be live at `https://<username>.github.io/<repo>/`.
+3. This site will be live at `https://draiyned.github.io/openplay/`.
 
 ## Deploy to Vercel
 1. Push the repo to GitHub (or drag-and-drop the folder into the Vercel dashboard).
