@@ -9,7 +9,7 @@
   /* ---------- state ---------- */
   var state = {
     players: [],
-    numCourts: 2,
+    numCourts: 1,
     sessionStarted: false,
     courts: [],
     matchCounts: [],
@@ -482,7 +482,7 @@
         '</svg>' +
         '<div>' +
           '<h1 class="app-title">Open Play Generator</h1>' +
-          '<p class="app-subtitle">Each court runs on its own clock — mark a court finished and it refills instantly.</p>' +
+          '<p class="app-subtitle">Created By draiyned.</p>' +
         '</div>' +
       '</div>'
     );
