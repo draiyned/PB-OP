@@ -17,6 +17,7 @@
     benchOrder: {},
     turnCounter: 0,
     partnerHistory: {},
+    benched: {},
     history: [],
     error: "",
     confirmState: {},
@@ -106,13 +107,64 @@
     return s;
   }
 
-  function pickFour(waitingPool, gp, bo) {
+  function combosOf(arr, k) {
+    var result = [];
+    function helper(start, combo) {
+      if (combo.length === k) {
+        result.push(combo.slice());
+        return;
+      }
+      for (var i = start; i < arr.length; i++) {
+        combo.push(arr[i]);
+        helper(i + 1, combo);
+        combo.pop();
+      }
+    }
+    helper(0, []);
+    return result;
+  }
+
+  function groupRepeatScore(group, ph) {
+    var score = 0;
+    for (var i = 0; i < group.length; i++) {
+      for (var j = i + 1; j < group.length; j++) {
+        score += ph[pairKey(group[i].id, group[j].id)] || 0;
+      }
+    }
+    return score;
+  }
+
+  function pickFour(waitingPool, gp, bo, ph) {
     var sorted = shuffle(waitingPool).sort(function (a, b) {
       var diff = (gp[a.id] || 0) - (gp[b.id] || 0);
       if (diff !== 0) return diff;
       return (bo[a.id] || 0) - (bo[b.id] || 0);
     });
-    return sorted.slice(0, 4);
+
+    if (sorted.length <= 4 || !ph) return sorted.slice(0, 4);
+
+    // Players with strictly fewer games played are owed a spot and stay
+    // locked in. Among players tied on games played for the remaining
+    // slots, pick whichever combination has repeated as partners the
+    // least, instead of taking them in arbitrary (shuffled) order.
+    var cutoffGp = gp[sorted[3].id] || 0;
+    var locked = sorted.filter(function (p) { return (gp[p.id] || 0) < cutoffGp; });
+    var tied = sorted.filter(function (p) { return (gp[p.id] || 0) === cutoffGp; });
+    var slotsLeft = 4 - locked.length;
+
+    if (tied.length <= slotsLeft) return locked.concat(tied).slice(0, 4);
+
+    var candidates = tied.slice(0, 8); // bound the combination search
+    var bestCombo = candidates.slice(0, slotsLeft);
+    var bestScore = Infinity;
+    combosOf(candidates, slotsLeft).forEach(function (combo) {
+      var score = groupRepeatScore(locked.concat(combo), ph);
+      if (score < bestScore) {
+        bestScore = score;
+        bestCombo = combo;
+      }
+    });
+    return locked.concat(bestCombo);
   }
 
   /* ---------- actions ---------- */
@@ -155,7 +207,7 @@
     var bo = Object.assign({}, state.benchOrder);
     var ph = Object.assign({}, state.partnerHistory);
 
-    var waiting = state.players.slice();
+    var waiting = state.players.filter(function (p) { return !state.benched[p.id]; });
     var newCourts = [];
     var newMatchCounts = [];
 
@@ -165,7 +217,7 @@
         newMatchCounts.push(0);
         continue;
       }
-      var four = pickFour(waiting, gp, bo);
+      var four = pickFour(waiting, gp, bo, ph);
       var split = bestTeamSplit(four, ph);
       four.forEach(function (p) {
         gp[p.id] = (gp[p.id] || 0) + 1;
@@ -254,7 +306,7 @@
   function generateNextForCourt(ci) {
     var occupied = occupiedIds(state.courts);
     var waiting = state.players.filter(function (p) {
-      return !occupied[p.id];
+      return !occupied[p.id] && !state.benched[p.id];
     });
 
     if (waiting.length < 4) {
@@ -267,7 +319,7 @@
     var gp = Object.assign({}, state.gamesPlayed);
     var ph = Object.assign({}, state.partnerHistory);
 
-    var four = pickFour(waiting, gp, state.benchOrder);
+    var four = pickFour(waiting, gp, state.benchOrder, ph);
     var split = bestTeamSplit(four, ph);
     four.forEach(function (p) {
       gp[p.id] = (gp[p.id] || 0) + 1;
@@ -284,6 +336,41 @@
     state.error = "";
     delete state.confirmState[ci];
     render();
+  }
+
+  function toggleBench(id) {
+    if (state.benched[id]) {
+      delete state.benched[id];
+    } else {
+      state.benched[id] = true;
+    }
+    render();
+  }
+
+  function askReroll(ci) {
+    state.confirmState[ci] = "confirmReroll";
+    render();
+  }
+
+  function rerollCourt(ci) {
+    var court = state.courts[ci];
+    if (!court) return;
+    var four = court.teamA.concat(court.teamB);
+    var gp = Object.assign({}, state.gamesPlayed);
+    var ph = Object.assign({}, state.partnerHistory);
+    four.forEach(function (p) {
+      gp[p.id] = Math.max(0, (gp[p.id] || 0) - 1);
+    });
+    var kA = pairKey(court.teamA[0].id, court.teamA[1].id);
+    var kB = pairKey(court.teamB[0].id, court.teamB[1].id);
+    ph[kA] = Math.max(0, (ph[kA] || 0) - 1);
+    ph[kB] = Math.max(0, (ph[kB] || 0) - 1);
+    state.gamesPlayed = gp;
+    state.partnerHistory = ph;
+    state.matchCounts[ci] = Math.max(0, (state.matchCounts[ci] || 1) - 1);
+    state.courts[ci] = null;
+    delete state.confirmState[ci];
+    generateNextForCourt(ci);
   }
 
   function askEndSession() {
@@ -310,6 +397,7 @@
     state.benchOrder = bo;
     state.turnCounter = 0;
     state.partnerHistory = {};
+    state.benched = {};
     state.error = "";
     state.confirmState = {};
     state.confirmEndSession = false;
@@ -403,11 +491,19 @@
   function buildSetupPanel(occupied) {
     var chips = state.players.map(function (p) {
       var occCls = occupied[p.id] ? " occupied" : "";
+      var isBenched = !!state.benched[p.id];
+      var benchedCls = isBenched ? " benched" : "";
+      var action = state.sessionStarted ? "toggle-bench" : "remove-player";
+      var label = state.sessionStarted
+        ? (isBenched ? "Mark " + p.name + " active" : "Mark " + p.name + " left")
+        : "Remove " + p.name;
+      var icon = state.sessionStarted && isBenched ? ICONS.check(12) : ICONS.x(12);
       return (
-        '<span class="chip' + occCls + '">' +
+        '<span class="chip' + occCls + benchedCls + '">' +
           escapeHtml(p.name) +
-          '<button type="button" class="chip-remove" data-action="remove-player" data-id="' + p.id + '" aria-label="Remove ' + escapeHtml(p.name) + '">' +
-            ICONS.x(12) +
+          (isBenched ? ' <span class="chip-tag">left</span>' : '') +
+          '<button type="button" class="chip-remove" data-action="' + action + '" data-id="' + p.id + '" aria-label="' + escapeHtml(label) + '">' +
+            icon +
           '</button>' +
         '</span>'
       );
@@ -510,10 +606,24 @@
             '</div>' +
           '</div>'
         );
+      } else if (cs === "confirmReroll") {
+        inner += (
+          '<div class="confirm-block">' +
+            '<div class="confirm-text">Cancel this match and generate a new pairing?</div>' +
+            '<div class="btn-row">' +
+              '<button type="button" class="btn-small" data-action="reroll" data-ci="' + ci + '">' + ICONS.check(13) + ' Yes, reroll</button>' +
+              '<button type="button" class="btn-ghost-small" data-action="cancel-finish" data-ci="' + ci + '">Cancel</button>' +
+            '</div>' +
+          '</div>'
+        );
       } else {
         inner += (
-          '<button type="button" class="btn-small" data-action="ask-finish" data-ci="' + ci + '">' +
-            ICONS.check(13) + ' Finished — next match</button>'
+          '<div class="btn-row">' +
+            '<button type="button" class="btn-small" data-action="ask-finish" data-ci="' + ci + '">' +
+              ICONS.check(13) + ' Finished — next match</button>' +
+            '<button type="button" class="btn-ghost-small" data-action="ask-reroll" data-ci="' + ci + '" title="Cancel and re-pair this match">' +
+              ICONS.shuffle(12) + ' Reroll</button>' +
+          '</div>'
         );
       }
     } else if (freeCount >= 4) {
@@ -537,14 +647,14 @@
 
   function buildCourtsGrid() {
     var occupied = occupiedIds(state.courts);
-    var freeCount = state.players.filter(function (p) { return !occupied[p.id]; }).length;
+    var freeCount = state.players.filter(function (p) { return !occupied[p.id] && !state.benched[p.id]; }).length;
     return '<div class="courts-grid">' + state.courts.map(function (court, ci) {
       return buildCourtCard(court, ci, freeCount);
     }).join("") + '</div>';
   }
 
   function buildWaitingSection(occupied) {
-    var waitingPlayers = state.players.filter(function (p) { return !occupied[p.id]; });
+    var waitingPlayers = state.players.filter(function (p) { return !occupied[p.id] && !state.benched[p.id]; });
     var list;
     if (waitingPlayers.length === 0) {
       list = '<span class="waiting-empty">Everyone\'s on a court.</span>';
@@ -808,6 +918,7 @@
         benchOrder: state.benchOrder,
         turnCounter: state.turnCounter,
         partnerHistory: state.partnerHistory,
+        benched: state.benched,
         history: state.history,
       };
       sessionStorage.setItem(storageKey(), JSON.stringify(toSave));
@@ -845,6 +956,7 @@
     var ci = btn.dataset.ci !== undefined ? Number(btn.dataset.ci) : undefined;
     if (action === "add-player") addPlayer();
     else if (action === "remove-player") removePlayer(btn.dataset.id);
+    else if (action === "toggle-bench") toggleBench(btn.dataset.id);
     else if (action === "start-session") startSession();
     else if (action === "ask-end-session") askEndSession();
     else if (action === "cancel-end-session") cancelEndSession();
@@ -854,6 +966,8 @@
     else if (action === "proceed-score") proceedToScore(ci);
     else if (action === "save-score") saveScoreAndFinish(ci);
     else if (action === "generate-next") generateNextForCourt(ci);
+    else if (action === "ask-reroll") askReroll(ci);
+    else if (action === "reroll") rerollCourt(ci);
     else if (action === "download-history") downloadHistory();
   }
 
