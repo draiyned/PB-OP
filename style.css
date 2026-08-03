@@ -99,6 +99,40 @@ button, input {
 }
 .btn-add:hover { opacity: 0.9; }
 
+.bulk-add-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  color: #E8D144;
+  font-size: 0.8125rem;
+  padding: 0;
+  margin-bottom: 16px;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.bulk-add-link:hover { opacity: 1; }
+
+.bulk-add-panel {
+  margin-bottom: 16px;
+}
+
+.bulk-add-textarea {
+  width: 100%;
+  min-height: 96px;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 0.875rem;
+  background: #122320;
+  border: 1px solid rgba(245, 239, 217, 0.2);
+  color: #F5EFD9;
+  outline: none;
+  resize: vertical;
+  font-family: inherit;
+  margin-bottom: 8px;
+}
+
 .player-chips {
   display: flex;
   flex-wrap: wrap;
@@ -123,6 +157,13 @@ button, input {
   opacity: 0.55;
   text-decoration: line-through;
 }
+.chip.locked {
+  background: rgba(232, 209, 68, 0.1);
+}
+.chip.lock-pending {
+  background: rgba(232, 209, 68, 0.25);
+  box-shadow: 0 0 0 1px rgba(232, 209, 68, 0.6);
+}
 .chip-tag {
   text-decoration: none;
   font-size: 0.6875rem;
@@ -134,6 +175,38 @@ button, input {
   border-radius: 999px;
   padding: 1px 6px;
 }
+.chip-tag-lock {
+  background: rgba(232, 209, 68, 0.2);
+  color: #E8D144;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.chip-skill {
+  border-radius: 999px;
+  padding: 2px 7px;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+.chip-skill:hover { background: rgba(255, 255, 255, 0.12); }
+
+.chip-lock {
+  border-radius: 999px;
+  padding: 2px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  opacity: 0.7;
+}
+.chip-lock:hover { background: rgba(255, 255, 255, 0.1); opacity: 1; }
+.chip.locked .chip-lock { color: #E8D144; opacity: 1; }
 
 .chip-remove {
   border-radius: 999px;
@@ -146,6 +219,18 @@ button, input {
   align-items: center;
 }
 .chip-remove:hover { background: rgba(255, 255, 255, 0.1); }
+
+.lock-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.8125rem;
+  color: #E8D144;
+  background: rgba(232, 209, 68, 0.12);
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-bottom: 12px;
+}
 
 .courts-label {
   font-size: 0.875rem;
@@ -217,6 +302,20 @@ button, input {
 .toast .icon {
   color: #E8D144;
   flex-shrink: 0;
+}
+
+.toast-undo {
+  pointer-events: auto;
+}
+.toast-undo-btn {
+  background: none;
+  border: none;
+  color: #E8D144;
+  font-weight: 700;
+  font-size: 0.875rem;
+  cursor: pointer;
+  padding: 2px 4px;
+  text-decoration: underline;
 }
 
 /* ---------- action buttons ---------- */
@@ -439,7 +538,7 @@ button, input {
 
 .standings-row {
   display: grid;
-  grid-template-columns: 28px 1fr 48px 36px 48px 52px;
+  grid-template-columns: 28px 1fr 48px 36px 48px 52px 56px;
   align-items: center;
   gap: 6px;
   padding: 8px 12px;
@@ -472,7 +571,8 @@ button, input {
 .standings-record,
 .standings-matches,
 .standings-pct,
-.standings-diff {
+.standings-diff,
+.standings-rating {
   text-align: right;
   font-variant-numeric: tabular-nums;
   opacity: 0.85;
@@ -480,6 +580,8 @@ button, input {
 
 .standings-diff.pos { color: #8FCB9B; }
 .standings-diff.neg { color: #E08585; }
+.standings-rating.pos { color: #8FCB9B; }
+.standings-rating.neg { color: #E08585; }
 
 /* ---------- match history ---------- */
 .history-grid {
