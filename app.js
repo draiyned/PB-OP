@@ -6,10 +6,13 @@
   var LINE_COLOR = "#F5EFD9";
   var COURT_COLOR = "#2F6E5C";
 
+  var SKILL_LABELS = ["—", "B", "LN", "HN", "LI", "HI"];
+  var SKILL_NAMES = ["Unrated", "Beginner", "Low Novice", "High Novice", "Low Intermediate", "High Intermediate"];
+
   /* ---------- state ---------- */
   var state = {
     players: [],
-    numCourts: 1,
+    numCourts: 2,
     sessionStarted: false,
     courts: [],
     matchCounts: [],
@@ -17,6 +20,8 @@
     benchOrder: {},
     turnCounter: 0,
     partnerHistory: {},
+    opponentHistory: {},
+    recentPartners: [],
     benched: {},
     history: [],
     error: "",
@@ -24,6 +29,11 @@
     confirmEndSession: false,
     scoreDraft: {},
     nameInput: "",
+    lockedPairs: [],
+    pendingLockId: null,
+    lastFinish: null,
+    bulkAddOpen: false,
+    bulkAddText: "",
   };
 
   /* ---------- toast notification ---------- */
@@ -52,6 +62,38 @@
     }, 2600);
   }
 
+  function showUndoToast(message, onUndo) {
+    if (!toastRoot) return;
+    if (toastTimer) {
+      clearTimeout(toastTimer);
+      toastTimer = null;
+    }
+    var el = document.createElement("div");
+    el.className = "toast toast-undo";
+    el.innerHTML =
+      "<span>" + escapeHtml(message) + "</span>" +
+      '<button type="button" class="toast-undo-btn">Undo</button>';
+    toastRoot.innerHTML = "";
+    toastRoot.appendChild(el);
+    void el.offsetWidth;
+    el.classList.add("toast-visible");
+
+    var done = false;
+    function hide() {
+      if (done) return;
+      done = true;
+      el.classList.remove("toast-visible");
+      setTimeout(function () {
+        if (el.parentNode) el.parentNode.removeChild(el);
+      }, 200);
+    }
+    el.querySelector(".toast-undo-btn").addEventListener("click", function () {
+      hide();
+      onUndo();
+    });
+    toastTimer = setTimeout(hide, 10000);
+  }
+
   /* ---------- helpers ---------- */
   function escapeHtml(str) {
     return String(str).replace(/[&<>"']/g, function (c) {
@@ -74,7 +116,49 @@
     return [a, b].sort().join("::");
   }
 
-  function bestTeamSplit(four, partnerHistory) {
+  function crossPairKeys(teamA, teamB) {
+    return [
+      pairKey(teamA[0].id, teamB[0].id),
+      pairKey(teamA[0].id, teamB[1].id),
+      pairKey(teamA[1].id, teamB[0].id),
+      pairKey(teamA[1].id, teamB[1].id),
+    ];
+  }
+
+  var RECENT_LIMIT = 6; // last 3 matches' worth of partner pairs
+
+  function splitScore(teamA, teamB, ph, oh, recent) {
+    var k1 = pairKey(teamA[0].id, teamA[1].id);
+    var k2 = pairKey(teamB[0].id, teamB[1].id);
+    var partnerScore = (ph[k1] || 0) + (ph[k2] || 0);
+    var opponentScore = 0;
+    if (oh) {
+      crossPairKeys(teamA, teamB).forEach(function (k) {
+        opponentScore += oh[k] || 0;
+      });
+    }
+    // A pair that partnered in one of the last few matches gets a heavy
+    // penalty on top of their lifetime count — this stops the same two
+    // people from being reunited back-to-back (or almost back-to-back)
+    // just because their overall repeat count still ties for lowest.
+    var recentPenalty = 0;
+    if (recent) {
+      if (recent.indexOf(k1) !== -1) recentPenalty += 50;
+      if (recent.indexOf(k2) !== -1) recentPenalty += 50;
+    }
+    // Skill balance: prefer splits where each team's combined skill is
+    // close, so a team of two 5s doesn't face two total beginners.
+    var skillA = (teamA[0].skill || 0) + (teamA[1].skill || 0);
+    var skillB = (teamB[0].skill || 0) + (teamB[1].skill || 0);
+    var skillPenalty = Math.abs(skillA - skillB) * 3;
+    // Repeating a partner matters far more than repeating an opponent —
+    // with a big player pool, facing someone across the net again and
+    // again is the more visible/annoying repeat, so it still counts,
+    // just less than an outright repeat partnership.
+    return partnerScore * 4 + opponentScore + recentPenalty + skillPenalty;
+  }
+
+  function bestTeamSplit(four, partnerHistory, opponentHistory, recent) {
     var p0 = four[0], p1 = four[1], p2 = four[2], p3 = four[3];
     var options = shuffle([
       { teamA: [p0, p1], teamB: [p2, p3] },
@@ -84,9 +168,7 @@
     var best = options[0];
     var bestScore = Infinity;
     options.forEach(function (opt) {
-      var k1 = pairKey(opt.teamA[0].id, opt.teamA[1].id);
-      var k2 = pairKey(opt.teamB[0].id, opt.teamB[1].id);
-      var s = (partnerHistory[k1] || 0) + (partnerHistory[k2] || 0);
+      var s = splitScore(opt.teamA, opt.teamB, partnerHistory, opponentHistory, recent);
       if (s < bestScore) {
         bestScore = s;
         best = opt;
@@ -124,17 +206,22 @@
     return result;
   }
 
-  function groupRepeatScore(group, ph) {
-    var score = 0;
-    for (var i = 0; i < group.length; i++) {
-      for (var j = i + 1; j < group.length; j++) {
-        score += ph[pairKey(group[i].id, group[j].id)] || 0;
-      }
-    }
-    return score;
+  function bestSplitScore(four, ph, oh, recent) {
+    var p0 = four[0], p1 = four[1], p2 = four[2], p3 = four[3];
+    var options = [
+      [[p0, p1], [p2, p3]],
+      [[p0, p2], [p1, p3]],
+      [[p0, p3], [p1, p2]],
+    ];
+    var best = Infinity;
+    options.forEach(function (opt) {
+      var s = splitScore(opt[0], opt[1], ph, oh, recent);
+      if (s < best) best = s;
+    });
+    return best;
   }
 
-  function pickFour(waitingPool, gp, bo, ph) {
+  function pickFour(waitingPool, gp, bo, ph, oh, recent) {
     var sorted = shuffle(waitingPool).sort(function (a, b) {
       var diff = (gp[a.id] || 0) - (gp[b.id] || 0);
       if (diff !== 0) return diff;
@@ -145,8 +232,10 @@
 
     // Players with strictly fewer games played are owed a spot and stay
     // locked in. Among players tied on games played for the remaining
-    // slots, pick whichever combination has repeated as partners the
-    // least, instead of taking them in arbitrary (shuffled) order.
+    // slots, prefer whichever combination can be split into teams with
+    // the fewest repeated partnerships (and, secondarily, the fewest
+    // repeated opponents) — a group isn't penalized just because two of
+    // them faced each other as opponents once before.
     var cutoffGp = gp[sorted[3].id] || 0;
     var locked = sorted.filter(function (p) { return (gp[p.id] || 0) < cutoffGp; });
     var tied = sorted.filter(function (p) { return (gp[p.id] || 0) === cutoffGp; });
@@ -154,17 +243,93 @@
 
     if (tied.length <= slotsLeft) return locked.concat(tied).slice(0, 4);
 
-    var candidates = tied.slice(0, 8); // bound the combination search
+    var candidates = tied.slice(0, 16); // bound the combination search
     var bestCombo = candidates.slice(0, slotsLeft);
     var bestScore = Infinity;
     combosOf(candidates, slotsLeft).forEach(function (combo) {
-      var score = groupRepeatScore(locked.concat(combo), ph);
+      var score = bestSplitScore(locked.concat(combo), ph, oh, recent);
       if (score < bestScore) {
         bestScore = score;
         bestCombo = combo;
       }
     });
     return locked.concat(bestCombo);
+  }
+
+  function buildUnits(playerList) {
+    var byId = {};
+    playerList.forEach(function (p) { byId[p.id] = p; });
+    var used = {};
+    var units = [];
+    state.lockedPairs.forEach(function (pair) {
+      var a = byId[pair.a], b = byId[pair.b];
+      if (a && b && !used[a.id] && !used[b.id]) {
+        units.push({ members: [a, b], isLocked: true });
+        used[a.id] = true;
+        used[b.id] = true;
+      }
+    });
+    playerList.forEach(function (p) {
+      if (!used[p.id]) units.push({ members: [p], isLocked: false });
+    });
+    return units;
+  }
+
+  function pickUnitsForFour(waitingPool, gp, bo) {
+    var units = buildUnits(waitingPool);
+    var sorted = shuffle(units).sort(function (u1, u2) {
+      var g1 = Math.max.apply(null, u1.members.map(function (m) { return gp[m.id] || 0; }));
+      var g2 = Math.max.apply(null, u2.members.map(function (m) { return gp[m.id] || 0; }));
+      if (g1 !== g2) return g1 - g2;
+      var b1 = Math.max.apply(null, u1.members.map(function (m) { return bo[m.id] || 0; }));
+      var b2 = Math.max.apply(null, u2.members.map(function (m) { return bo[m.id] || 0; }));
+      return b1 - b2;
+    });
+    var chosen = [];
+    var slotsLeft = 4;
+    for (var i = 0; i < sorted.length && slotsLeft > 0; i++) {
+      if (sorted[i].members.length <= slotsLeft) {
+        chosen.push(sorted[i]);
+        slotsLeft -= sorted[i].members.length;
+      }
+    }
+    return slotsLeft === 0 ? chosen : null;
+  }
+
+  // Picks the next four players and splits them into teams, honoring any
+  // locked partnerships (they're always kept on the same team, overriding
+  // the usual partner/opponent/skill scoring for that team).
+  function resolveMatch(waitingPool, gp, bo, ph, oh, recent) {
+    if (state.lockedPairs.length > 0) {
+      var units = pickUnitsForFour(waitingPool, gp, bo);
+      if (units) {
+        var four = [];
+        units.forEach(function (u) { four = four.concat(u.members); });
+        var lockedUnits = units.filter(function (u) { return u.isLocked; });
+        if (lockedUnits.length > 0) {
+          var teamA, teamB;
+          if (lockedUnits.length === 2) {
+            teamA = lockedUnits[0].members;
+            teamB = lockedUnits[1].members;
+          } else {
+            teamA = lockedUnits[0].members;
+            teamB = [];
+            units.forEach(function (u) {
+              if (!u.isLocked) teamB = teamB.concat(u.members);
+            });
+          }
+          var split = Math.random() < 0.5
+            ? { teamA: teamA, teamB: teamB }
+            : { teamA: teamB, teamB: teamA };
+          return { four: four, split: split };
+        }
+        return { four: four, split: bestTeamSplit(four, ph, oh, recent) };
+      }
+      // couldn't fill exactly 4 respecting unit boundaries this round —
+      // fall back to plain selection rather than blocking the court
+    }
+    var four = pickFour(waitingPool, gp, bo, ph, oh, recent);
+    return { four: four, split: bestTeamSplit(four, ph, oh, recent) };
   }
 
   /* ---------- actions ---------- */
@@ -180,7 +345,7 @@
       return;
     }
     var id = Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-    state.players.push({ id: id, name: name });
+    state.players.push({ id: id, name: name, skill: 0 });
     state.gamesPlayed[id] = 0;
     state.benchOrder[id] = -1;
     state.nameInput = "";
@@ -188,10 +353,94 @@
     render();
   }
 
+  function toggleBulkAdd() {
+    state.bulkAddOpen = !state.bulkAddOpen;
+    if (!state.bulkAddOpen) state.bulkAddText = "";
+    render();
+  }
+
+  function importBulkPlayers() {
+    var raw = state.bulkAddText || "";
+    var names = raw
+      .split(/[\n,]+/)
+      .map(function (s) { return s.replace(/^\s*\d+[.)]\s*/, "").trim(); })
+      .filter(function (s) { return s.length > 0; });
+
+    var existingLower = {};
+    state.players.forEach(function (p) { existingLower[p.name.toLowerCase()] = true; });
+
+    var added = 0, skipped = 0;
+    names.forEach(function (name) {
+      var lower = name.toLowerCase();
+      if (existingLower[lower]) {
+        skipped++;
+        return;
+      }
+      existingLower[lower] = true;
+      var id = Date.now() + "-" + Math.random().toString(36).slice(2, 7);
+      state.players.push({ id: id, name: name, skill: 0 });
+      state.gamesPlayed[id] = 0;
+      state.benchOrder[id] = -1;
+      added++;
+    });
+
+    state.bulkAddText = "";
+    state.bulkAddOpen = false;
+    state.error = "";
+    render();
+
+    if (added > 0) {
+      var msg = added + " player" + (added === 1 ? "" : "s") + " added" +
+        (skipped > 0 ? " (" + skipped + " duplicate" + (skipped === 1 ? "" : "s") + " skipped)" : "");
+      showToast(msg, ICONS.check);
+    } else {
+      showToast(skipped > 0 ? "Already on the list" : "No names found", ICONS.x);
+    }
+  }
+
+  function findLockPartnerId(id) {
+    var pair = state.lockedPairs.filter(function (p) { return p.a === id || p.b === id; })[0];
+    if (!pair) return null;
+    return pair.a === id ? pair.b : pair.a;
+  }
+
+  function toggleLock(id) {
+    var partnerId = findLockPartnerId(id);
+    if (partnerId) {
+      // already locked -- unlock
+      state.lockedPairs = state.lockedPairs.filter(function (p) {
+        return p.a !== id && p.b !== id;
+      });
+      if (state.pendingLockId === id) state.pendingLockId = null;
+    } else if (state.pendingLockId === id) {
+      // tapped the same player again -- cancel selection
+      state.pendingLockId = null;
+    } else if (state.pendingLockId === null) {
+      // start selecting a partner for this player
+      state.pendingLockId = id;
+    } else {
+      // completing a lock with the pending player (guaranteed unlocked, see above)
+      state.lockedPairs.push({ a: state.pendingLockId, b: id });
+      state.pendingLockId = null;
+    }
+    render();
+  }
+
+  function cycleSkill(id) {
+    var p = state.players.filter(function (pl) { return pl.id === id; })[0];
+    if (!p) return;
+    p.skill = ((p.skill || 0) + 1) % 6;
+    render();
+  }
+
   function removePlayer(id) {
     state.players = state.players.filter(function (p) {
       return p.id !== id;
     });
+    state.lockedPairs = state.lockedPairs.filter(function (pair) {
+      return pair.a !== id && pair.b !== id;
+    });
+    if (state.pendingLockId === id) state.pendingLockId = null;
     render();
   }
 
@@ -206,6 +455,8 @@
     var gp = Object.assign({}, state.gamesPlayed);
     var bo = Object.assign({}, state.benchOrder);
     var ph = Object.assign({}, state.partnerHistory);
+    var oh = Object.assign({}, state.opponentHistory);
+    var recent = state.recentPartners.slice();
 
     var waiting = state.players.filter(function (p) { return !state.benched[p.id]; });
     var newCourts = [];
@@ -217,8 +468,9 @@
         newMatchCounts.push(0);
         continue;
       }
-      var four = pickFour(waiting, gp, bo, ph);
-      var split = bestTeamSplit(four, ph);
+      var result = resolveMatch(waiting, gp, bo, ph, oh, recent);
+      var four = result.four;
+      var split = result.split;
       four.forEach(function (p) {
         gp[p.id] = (gp[p.id] || 0) + 1;
       });
@@ -226,6 +478,11 @@
       var kB = pairKey(split.teamB[0].id, split.teamB[1].id);
       ph[kA] = (ph[kA] || 0) + 1;
       ph[kB] = (ph[kB] || 0) + 1;
+      recent.unshift(kA, kB);
+      recent = recent.slice(0, RECENT_LIMIT);
+      crossPairKeys(split.teamA, split.teamB).forEach(function (k) {
+        oh[k] = (oh[k] || 0) + 1;
+      });
       var fourIds = four.map(function (f) { return f.id; });
       waiting = waiting.filter(function (p) {
         return fourIds.indexOf(p.id) === -1;
@@ -236,6 +493,8 @@
 
     state.gamesPlayed = gp;
     state.partnerHistory = ph;
+    state.opponentHistory = oh;
+    state.recentPartners = recent;
     state.courts = newCourts;
     state.matchCounts = newMatchCounts;
     state.history = [];
@@ -279,6 +538,13 @@
       return;
     }
 
+    state.lastFinish = {
+      ci: ci,
+      court: finished,
+      benchOrder: Object.assign({}, state.benchOrder),
+      turnCounter: state.turnCounter,
+    };
+
     var counter = state.turnCounter;
     finished.teamA.concat(finished.teamB).forEach(function (p) {
       state.benchOrder[p.id] = counter;
@@ -301,6 +567,19 @@
     delete state.scoreDraft[ci];
     state.confirmState[ci] = "confirmNext";
     render();
+    showUndoToast("Match recorded", function () { undoLastFinish(ci); });
+  }
+
+  function undoLastFinish(ci) {
+    var lf = state.lastFinish;
+    if (!lf || lf.ci !== ci) return;
+    state.courts[lf.ci] = lf.court;
+    state.history.shift();
+    state.benchOrder = lf.benchOrder;
+    state.turnCounter = lf.turnCounter;
+    delete state.confirmState[lf.ci];
+    state.lastFinish = null;
+    render();
   }
 
   function generateNextForCourt(ci) {
@@ -316,11 +595,16 @@
       return;
     }
 
+    if (state.lastFinish && state.lastFinish.ci === ci) state.lastFinish = null;
+
     var gp = Object.assign({}, state.gamesPlayed);
     var ph = Object.assign({}, state.partnerHistory);
+    var oh = Object.assign({}, state.opponentHistory);
+    var recent = state.recentPartners.slice();
 
-    var four = pickFour(waiting, gp, state.benchOrder, ph);
-    var split = bestTeamSplit(four, ph);
+    var result = resolveMatch(waiting, gp, state.benchOrder, ph, oh, recent);
+    var four = result.four;
+    var split = result.split;
     four.forEach(function (p) {
       gp[p.id] = (gp[p.id] || 0) + 1;
     });
@@ -328,11 +612,18 @@
     var kB = pairKey(split.teamB[0].id, split.teamB[1].id);
     ph[kA] = (ph[kA] || 0) + 1;
     ph[kB] = (ph[kB] || 0) + 1;
+    recent.unshift(kA, kB);
+    recent = recent.slice(0, RECENT_LIMIT);
+    crossPairKeys(split.teamA, split.teamB).forEach(function (k) {
+      oh[k] = (oh[k] || 0) + 1;
+    });
 
     state.courts[ci] = { teamA: split.teamA, teamB: split.teamB };
     state.matchCounts[ci] = (state.matchCounts[ci] || 0) + 1;
     state.gamesPlayed = gp;
     state.partnerHistory = ph;
+    state.opponentHistory = oh;
+    state.recentPartners = recent;
     state.error = "";
     delete state.confirmState[ci];
     render();
@@ -358,6 +649,7 @@
     var four = court.teamA.concat(court.teamB);
     var gp = Object.assign({}, state.gamesPlayed);
     var ph = Object.assign({}, state.partnerHistory);
+    var oh = Object.assign({}, state.opponentHistory);
     four.forEach(function (p) {
       gp[p.id] = Math.max(0, (gp[p.id] || 0) - 1);
     });
@@ -365,8 +657,18 @@
     var kB = pairKey(court.teamB[0].id, court.teamB[1].id);
     ph[kA] = Math.max(0, (ph[kA] || 0) - 1);
     ph[kB] = Math.max(0, (ph[kB] || 0) - 1);
+    crossPairKeys(court.teamA, court.teamB).forEach(function (k) {
+      oh[k] = Math.max(0, (oh[k] || 0) - 1);
+    });
+    var recent = state.recentPartners.slice();
+    [kA, kB].forEach(function (k) {
+      var idx = recent.indexOf(k);
+      if (idx !== -1) recent.splice(idx, 1);
+    });
     state.gamesPlayed = gp;
     state.partnerHistory = ph;
+    state.opponentHistory = oh;
+    state.recentPartners = recent;
     state.matchCounts[ci] = Math.max(0, (state.matchCounts[ci] || 1) - 1);
     state.courts[ci] = null;
     delete state.confirmState[ci];
@@ -397,6 +699,8 @@
     state.benchOrder = bo;
     state.turnCounter = 0;
     state.partnerHistory = {};
+    state.opponentHistory = {};
+    state.recentPartners = [];
     state.benched = {};
     state.error = "";
     state.confirmState = {};
@@ -463,6 +767,19 @@
         size, style
       );
     },
+    link: function (size, style) {
+      return icon(
+        '<path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>' +
+        '<path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>',
+        size, style
+      );
+    },
+    lock: function (size, style) {
+      return icon(
+        '<rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>',
+        size, style
+      );
+    },
   };
 
   /* ---------- rendering ---------- */
@@ -482,7 +799,7 @@
         '</svg>' +
         '<div>' +
           '<h1 class="app-title">Open Play Generator</h1>' +
-          '<p class="app-subtitle">Created By draiyned.</p>' +
+          '<p class="app-subtitle">Created by draiyned.</p>' +
         '</div>' +
       '</div>'
     );
@@ -497,17 +814,38 @@
       var label = state.sessionStarted
         ? (isBenched ? "Mark " + p.name + " active" : "Mark " + p.name + " left")
         : "Remove " + p.name;
-      var icon = state.sessionStarted && isBenched ? ICONS.check(12) : ICONS.x(12);
+      var removeIcon = state.sessionStarted && isBenched ? ICONS.check(12) : ICONS.x(12);
+
+      var skill = p.skill || 0;
+      var skillLabel = SKILL_LABELS[skill] || "—";
+      var skillTitle = skill === 0 ? "Set skill level" : SKILL_NAMES[skill] + " — tap to change";
+
+      var partnerId = findLockPartnerId(p.id);
+      var partner = partnerId ? state.players.filter(function (pl) { return pl.id === partnerId; })[0] : null;
+      var isPending = state.pendingLockId === p.id;
+      var lockCls = partner ? " locked" : (isPending ? " lock-pending" : "");
+      var lockIcon = partner ? ICONS.lock(12) : ICONS.link(12);
+      var lockTitle = partner
+        ? "Locked with " + partner.name + " — tap to unlock"
+        : (isPending ? "Tap another player to lock partner" : "Lock partner");
+
       return (
-        '<span class="chip' + occCls + benchedCls + '">' +
+        '<span class="chip' + occCls + benchedCls + lockCls + '">' +
           escapeHtml(p.name) +
           (isBenched ? ' <span class="chip-tag">left</span>' : '') +
+          (partner ? ' <span class="chip-tag chip-tag-lock">w/ ' + escapeHtml(partner.name) + '</span>' : '') +
+          '<button type="button" class="chip-skill" data-action="cycle-skill" data-id="' + p.id + '" title="' + escapeHtml(skillTitle) + '">' + skillLabel + '</button>' +
+          '<button type="button" class="chip-lock" data-action="toggle-lock" data-id="' + p.id + '" title="' + escapeHtml(lockTitle) + '">' + lockIcon + '</button>' +
           '<button type="button" class="chip-remove" data-action="' + action + '" data-id="' + p.id + '" aria-label="' + escapeHtml(label) + '">' +
-            icon +
+            removeIcon +
           '</button>' +
         '</span>'
       );
     }).join("");
+
+    var pendingPlayer = state.pendingLockId
+      ? state.players.filter(function (p) { return p.id === state.pendingLockId; })[0]
+      : null;
 
     return (
       '<div class="panel">' +
@@ -519,6 +857,21 @@
           '<input id="name-input" class="text-input" placeholder="Add a player name" value="' + escapeHtml(state.nameInput) + '" />' +
           '<button type="button" class="btn-add" data-action="add-player">' + ICONS.plus(16) + ' Add</button>' +
         '</div>' +
+        (state.bulkAddOpen
+          ? (
+              '<div class="bulk-add-panel">' +
+                '<textarea id="bulk-add-input" class="bulk-add-textarea" placeholder="Paste names, one per line (or comma-separated)&#10;e.g.&#10;Alex&#10;Sam&#10;Jordan">' + escapeHtml(state.bulkAddText) + '</textarea>' +
+                '<div class="btn-row">' +
+                  '<button type="button" class="btn-small" data-action="import-bulk">' + ICONS.plus(13) + ' Import players</button>' +
+                  '<button type="button" class="btn-ghost-small" data-action="toggle-bulk-add">Cancel</button>' +
+                '</div>' +
+              '</div>'
+            )
+          : '<button type="button" class="bulk-add-link" data-action="toggle-bulk-add">' + ICONS.users(13) + ' Paste a list of names</button>'
+        ) +
+        (pendingPlayer
+          ? '<div class="lock-hint">' + ICONS.link(13) + ' Tap another player\'s lock icon to pair with ' + escapeHtml(pendingPlayer.name) + '</div>'
+          : "") +
         (state.players.length > 0 ? '<div class="player-chips">' + chips + '</div>' : "") +
         '<label class="courts-label">Courts' +
           '<input id="num-courts-input" type="number" min="1" max="20" value="' + state.numCourts + '" class="number-input"' + (state.sessionStarted ? " disabled" : "") + ' />' +
@@ -671,20 +1024,33 @@
     );
   }
 
+  // Rating step per point of margin, capped the same way the source table
+  // tops out at ±11 points -> ±0.11: any larger blowout still only moves a
+  // player's rating by the same capped amount.
+  var RATING_STEP = 0.01;
+  var RATING_CAP_POINTS = 11;
+  // Starting base rating by skill level, indexed same as SKILL_LABELS/SKILL_NAMES:
+  // [Unrated, Beginner, Low Novice, High Novice, Low Intermediate, High Intermediate]
+  var SKILL_BASE_RATING = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
+
   function computeStandings() {
     var stats = {};
     state.players.forEach(function (p) {
-      stats[p.id] = { id: p.id, name: p.name, matches: 0, wins: 0, losses: 0, pf: 0, pa: 0 };
+      var base = SKILL_BASE_RATING[p.skill || 0];
+      if (base === undefined) base = SKILL_BASE_RATING[0];
+      stats[p.id] = { id: p.id, name: p.name, matches: 0, wins: 0, losses: 0, pf: 0, pa: 0, rating: base };
     });
     state.history.forEach(function (h) {
       var aWon = h.winner === "A";
+      var margin = Math.min(Math.abs(h.scoreA - h.scoreB), RATING_CAP_POINTS);
+      var ratingDelta = margin * RATING_STEP;
       h.teamA.forEach(function (p) {
         var s = stats[p.id];
         if (!s) return;
         s.matches += 1;
         s.pf += h.scoreA;
         s.pa += h.scoreB;
-        if (aWon) s.wins += 1; else s.losses += 1;
+        if (aWon) { s.wins += 1; s.rating += ratingDelta; } else { s.losses += 1; s.rating -= ratingDelta; }
       });
       h.teamB.forEach(function (p) {
         var s = stats[p.id];
@@ -692,13 +1058,15 @@
         s.matches += 1;
         s.pf += h.scoreB;
         s.pa += h.scoreA;
-        if (aWon) s.losses += 1; else s.wins += 1;
+        if (aWon) { s.losses += 1; s.rating -= ratingDelta; } else { s.wins += 1; s.rating += ratingDelta; }
       });
     });
     var list = Object.keys(stats).map(function (id) { return stats[id]; });
     list.forEach(function (s) {
       s.diff = s.pf - s.pa;
       s.winRate = s.matches > 0 ? s.wins / s.matches : 0;
+      // avoid floating point noise like 0.30000000000000004
+      s.rating = Math.round(s.rating * 100) / 100;
     });
     // Rank by wins, then win rate, then point differential, then name —
     // point differential is what keeps players with identical win/loss
@@ -706,6 +1074,7 @@
     list.sort(function (a, b) {
       if (b.wins !== a.wins) return b.wins - a.wins;
       if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      if (b.rating !== a.rating) return b.rating - a.rating;
       if (b.diff !== a.diff) return b.diff - a.diff;
       return a.name.localeCompare(b.name);
     });
@@ -716,6 +1085,8 @@
     var pct = Math.round(s.winRate * 100);
     var diffText = (s.diff > 0 ? "+" : "") + s.diff;
     var diffClass = s.diff > 0 ? "pos" : (s.diff < 0 ? "neg" : "");
+    var ratingText = (s.rating > 0 ? "+" : "") + s.rating.toFixed(2);
+    var ratingClass = s.rating > 0 ? "pos" : (s.rating < 0 ? "neg" : "");
     return (
       '<div class="standings-row">' +
         '<span class="standings-rank">' + rank + '</span>' +
@@ -724,6 +1095,7 @@
         '<span class="standings-matches">' + s.matches + '</span>' +
         '<span class="standings-pct">' + pct + '%</span>' +
         '<span class="standings-diff ' + diffClass + '">' + diffText + '</span>' +
+        '<span class="standings-rating ' + ratingClass + '">' + ratingText + '</span>' +
       '</div>'
     );
   }
@@ -742,6 +1114,7 @@
             '<span class="standings-matches">MP</span>' +
             '<span class="standings-pct">Win%</span>' +
             '<span class="standings-diff">+/-</span>' +
+            '<span class="standings-rating">Rating</span>' +
           '</div>' +
           standings.map(function (s, i) { return buildStandingsRow(s, i + 1); }).join("") +
         '</div>' +
@@ -918,6 +1291,9 @@
         benchOrder: state.benchOrder,
         turnCounter: state.turnCounter,
         partnerHistory: state.partnerHistory,
+        opponentHistory: state.opponentHistory,
+        recentPartners: state.recentPartners,
+        lockedPairs: state.lockedPairs,
         benched: state.benched,
         history: state.history,
       };
@@ -955,8 +1331,12 @@
     var action = btn.dataset.action;
     var ci = btn.dataset.ci !== undefined ? Number(btn.dataset.ci) : undefined;
     if (action === "add-player") addPlayer();
+    else if (action === "toggle-bulk-add") toggleBulkAdd();
+    else if (action === "import-bulk") importBulkPlayers();
     else if (action === "remove-player") removePlayer(btn.dataset.id);
     else if (action === "toggle-bench") toggleBench(btn.dataset.id);
+    else if (action === "cycle-skill") cycleSkill(btn.dataset.id);
+    else if (action === "toggle-lock") toggleLock(btn.dataset.id);
     else if (action === "start-session") startSession();
     else if (action === "ask-end-session") askEndSession();
     else if (action === "cancel-end-session") cancelEndSession();
@@ -975,6 +1355,8 @@
     var t = e.target;
     if (t.id === "name-input") {
       state.nameInput = t.value;
+    } else if (t.id === "bulk-add-input") {
+      state.bulkAddText = t.value;
     } else if (t.id === "num-courts-input") {
       state.numCourts = Math.max(1, parseInt(t.value, 10) || 1);
     } else if (t.dataset && t.dataset.bind === "score") {
