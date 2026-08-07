@@ -8,6 +8,16 @@
 
   var SKILL_LABELS = ["—", "B", "LN", "HN", "LI", "HI"];
   var SKILL_NAMES = ["Unrated", "Beginner", "Low Novice", "High Novice", "Low Intermediate", "High Intermediate"];
+  var STARTING_RATING = 3.50;
+
+  function round2(n) {
+    return Math.round(n * 100) / 100;
+  }
+
+  function ratingDelta(scoreA, scoreB) {
+    var diff = Math.abs(scoreA - scoreB);
+    return Math.min(diff, 11) * 0.01;
+  }
 
   /* ---------- state ---------- */
   var state = {
@@ -22,6 +32,7 @@
     partnerHistory: {},
     opponentHistory: {},
     recentPartners: [],
+    recentOpponents: [],
     benched: {},
     history: [],
     error: "",
@@ -126,14 +137,16 @@
   }
 
   var RECENT_LIMIT = 6; // last 3 matches' worth of partner pairs
+  var RECENT_OPP_LIMIT = 12; // last 3 matches' worth of opponent cross-pairs
 
-  function splitScore(teamA, teamB, ph, oh, recent) {
+  function splitScore(teamA, teamB, ph, oh, recent, recentOpp) {
     var k1 = pairKey(teamA[0].id, teamA[1].id);
     var k2 = pairKey(teamB[0].id, teamB[1].id);
     var partnerScore = (ph[k1] || 0) + (ph[k2] || 0);
+    var crossKeys = crossPairKeys(teamA, teamB);
     var opponentScore = 0;
     if (oh) {
-      crossPairKeys(teamA, teamB).forEach(function (k) {
+      crossKeys.forEach(function (k) {
         opponentScore += oh[k] || 0;
       });
     }
@@ -145,6 +158,14 @@
     if (recent) {
       if (recent.indexOf(k1) !== -1) recentPenalty += 50;
       if (recent.indexOf(k2) !== -1) recentPenalty += 50;
+    }
+    // Same idea for opponents: facing the same person again a match or
+    // two later gets a penalty even if their lifetime opponent count
+    // still ties for lowest.
+    if (recentOpp) {
+      crossKeys.forEach(function (k) {
+        if (recentOpp.indexOf(k) !== -1) recentPenalty += 20;
+      });
     }
     // Skill balance: prefer splits where each team's combined skill is
     // close, so a team of two 5s doesn't face two total beginners.
@@ -158,7 +179,7 @@
     return partnerScore * 4 + opponentScore + recentPenalty + skillPenalty;
   }
 
-  function bestTeamSplit(four, partnerHistory, opponentHistory, recent) {
+  function bestTeamSplit(four, partnerHistory, opponentHistory, recent, recentOpp) {
     var p0 = four[0], p1 = four[1], p2 = four[2], p3 = four[3];
     var options = shuffle([
       { teamA: [p0, p1], teamB: [p2, p3] },
@@ -168,7 +189,7 @@
     var best = options[0];
     var bestScore = Infinity;
     options.forEach(function (opt) {
-      var s = splitScore(opt.teamA, opt.teamB, partnerHistory, opponentHistory, recent);
+      var s = splitScore(opt.teamA, opt.teamB, partnerHistory, opponentHistory, recent, recentOpp);
       if (s < bestScore) {
         bestScore = s;
         best = opt;
@@ -206,7 +227,7 @@
     return result;
   }
 
-  function bestSplitScore(four, ph, oh, recent) {
+  function bestSplitScore(four, ph, oh, recent, recentOpp) {
     var p0 = four[0], p1 = four[1], p2 = four[2], p3 = four[3];
     var options = [
       [[p0, p1], [p2, p3]],
@@ -215,13 +236,13 @@
     ];
     var best = Infinity;
     options.forEach(function (opt) {
-      var s = splitScore(opt[0], opt[1], ph, oh, recent);
+      var s = splitScore(opt[0], opt[1], ph, oh, recent, recentOpp);
       if (s < best) best = s;
     });
     return best;
   }
 
-  function pickFour(waitingPool, gp, bo, ph, oh, recent) {
+  function pickFour(waitingPool, gp, bo, ph, oh, recent, recentOpp) {
     var sorted = shuffle(waitingPool).sort(function (a, b) {
       var diff = (gp[a.id] || 0) - (gp[b.id] || 0);
       if (diff !== 0) return diff;
@@ -247,7 +268,7 @@
     var bestCombo = candidates.slice(0, slotsLeft);
     var bestScore = Infinity;
     combosOf(candidates, slotsLeft).forEach(function (combo) {
-      var score = bestSplitScore(locked.concat(combo), ph, oh, recent);
+      var score = bestSplitScore(locked.concat(combo), ph, oh, recent, recentOpp);
       if (score < bestScore) {
         bestScore = score;
         bestCombo = combo;
@@ -275,8 +296,52 @@
     return units;
   }
 
-  function pickUnitsForFour(waitingPool, gp, bo) {
+  function allSubsets(arr) {
+    var result = [[]];
+    arr.forEach(function (item) {
+      var extended = result.map(function (s) { return s.concat([item]); });
+      result = result.concat(extended);
+    });
+    return result;
+  }
+
+  // How many times these units' members have already faced each other as
+  // opponents, lifetime — this is the thing that must never repeat if it
+  // can possibly be helped, since a locked pair's partner never changes,
+  // so the opponent is the only thing that can vary for them at all.
+  function unitFoeRepeatScore(units, oh) {
+    var score = 0;
+    for (var i = 0; i < units.length; i++) {
+      for (var j = i + 1; j < units.length; j++) {
+        units[i].members.forEach(function (m1) {
+          units[j].members.forEach(function (m2) {
+            score += (oh && oh[pairKey(m1.id, m2.id)]) || 0;
+          });
+        });
+      }
+    }
+    return score;
+  }
+
+  function unitRecentFoeHits(units, recentOpp) {
+    if (!recentOpp) return 0;
+    var hits = 0;
+    for (var i = 0; i < units.length; i++) {
+      for (var j = i + 1; j < units.length; j++) {
+        units[i].members.forEach(function (m1) {
+          units[j].members.forEach(function (m2) {
+            if (recentOpp.indexOf(pairKey(m1.id, m2.id)) !== -1) hits++;
+          });
+        });
+      }
+    }
+    return hits;
+  }
+
+  function pickUnitsForFour(waitingPool, gp, bo, ph, oh, recentOpp) {
     var units = buildUnits(waitingPool);
+    if (units.length === 0) return null;
+
     var sorted = shuffle(units).sort(function (u1, u2) {
       var g1 = Math.max.apply(null, u1.members.map(function (m) { return gp[m.id] || 0; }));
       var g2 = Math.max.apply(null, u2.members.map(function (m) { return gp[m.id] || 0; }));
@@ -285,23 +350,45 @@
       var b2 = Math.max.apply(null, u2.members.map(function (m) { return bo[m.id] || 0; }));
       return b1 - b2;
     });
-    var chosen = [];
-    var slotsLeft = 4;
-    for (var i = 0; i < sorted.length && slotsLeft > 0; i++) {
-      if (sorted[i].members.length <= slotsLeft) {
-        chosen.push(sorted[i]);
-        slotsLeft -= sorted[i].members.length;
+
+    // Search combinations of units (bounded to the fairest candidates)
+    // whose total size is exactly 4. A locked pair's partner is fixed,
+    // so the opponent is the only thing that can vary for them — that
+    // makes "never repeat the foe" the top priority here, well above
+    // rotation fairness: we minimize lifetime foe-repeats first, then
+    // break ties by fairness (games played), then by how recently that
+    // foe was faced.
+    var candidates = sorted.slice(0, 10);
+    var subsets = allSubsets(candidates).filter(function (s) {
+      var total = s.reduce(function (sum, u) { return sum + u.members.length; }, 0);
+      return total === 4;
+    });
+    if (subsets.length === 0) return null;
+
+    var best = null;
+    var bestScore = Infinity;
+    subsets.forEach(function (s) {
+      var fairnessSum = 0;
+      s.forEach(function (u) {
+        u.members.forEach(function (m) { fairnessSum += gp[m.id] || 0; });
+      });
+      var foeRepeats = unitFoeRepeatScore(s, oh);
+      var recentHits = unitRecentFoeHits(s, recentOpp);
+      var score = foeRepeats * 1000000 + fairnessSum * 100 + recentHits;
+      if (score < bestScore) {
+        bestScore = score;
+        best = s;
       }
-    }
-    return slotsLeft === 0 ? chosen : null;
+    });
+    return best;
   }
 
   // Picks the next four players and splits them into teams, honoring any
   // locked partnerships (they're always kept on the same team, overriding
   // the usual partner/opponent/skill scoring for that team).
-  function resolveMatch(waitingPool, gp, bo, ph, oh, recent) {
+  function resolveMatch(waitingPool, gp, bo, ph, oh, recent, recentOpp) {
     if (state.lockedPairs.length > 0) {
-      var units = pickUnitsForFour(waitingPool, gp, bo);
+      var units = pickUnitsForFour(waitingPool, gp, bo, ph, oh, recentOpp);
       if (units) {
         var four = [];
         units.forEach(function (u) { four = four.concat(u.members); });
@@ -323,13 +410,13 @@
             : { teamA: teamB, teamB: teamA };
           return { four: four, split: split };
         }
-        return { four: four, split: bestTeamSplit(four, ph, oh, recent) };
+        return { four: four, split: bestTeamSplit(four, ph, oh, recent, recentOpp) };
       }
       // couldn't fill exactly 4 respecting unit boundaries this round —
       // fall back to plain selection rather than blocking the court
     }
-    var four = pickFour(waitingPool, gp, bo, ph, oh, recent);
-    return { four: four, split: bestTeamSplit(four, ph, oh, recent) };
+    var four = pickFour(waitingPool, gp, bo, ph, oh, recent, recentOpp);
+    return { four: four, split: bestTeamSplit(four, ph, oh, recent, recentOpp) };
   }
 
   /* ---------- actions ---------- */
@@ -345,7 +432,7 @@
       return;
     }
     var id = Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-    state.players.push({ id: id, name: name, skill: 0 });
+    state.players.push({ id: id, name: name, skill: 0, rating: STARTING_RATING });
     state.gamesPlayed[id] = 0;
     state.benchOrder[id] = -1;
     state.nameInput = "";
@@ -378,7 +465,7 @@
       }
       existingLower[lower] = true;
       var id = Date.now() + "-" + Math.random().toString(36).slice(2, 7);
-      state.players.push({ id: id, name: name, skill: 0 });
+      state.players.push({ id: id, name: name, skill: 0, rating: STARTING_RATING });
       state.gamesPlayed[id] = 0;
       state.benchOrder[id] = -1;
       added++;
@@ -457,6 +544,7 @@
     var ph = Object.assign({}, state.partnerHistory);
     var oh = Object.assign({}, state.opponentHistory);
     var recent = state.recentPartners.slice();
+    var recentOpp = state.recentOpponents.slice();
 
     var waiting = state.players.filter(function (p) { return !state.benched[p.id]; });
     var newCourts = [];
@@ -468,7 +556,7 @@
         newMatchCounts.push(0);
         continue;
       }
-      var result = resolveMatch(waiting, gp, bo, ph, oh, recent);
+      var result = resolveMatch(waiting, gp, bo, ph, oh, recent, recentOpp);
       var four = result.four;
       var split = result.split;
       four.forEach(function (p) {
@@ -480,9 +568,11 @@
       ph[kB] = (ph[kB] || 0) + 1;
       recent.unshift(kA, kB);
       recent = recent.slice(0, RECENT_LIMIT);
-      crossPairKeys(split.teamA, split.teamB).forEach(function (k) {
+      var crossKeys = crossPairKeys(split.teamA, split.teamB);
+      crossKeys.forEach(function (k) {
         oh[k] = (oh[k] || 0) + 1;
       });
+      recentOpp = crossKeys.concat(recentOpp).slice(0, RECENT_OPP_LIMIT);
       var fourIds = four.map(function (f) { return f.id; });
       waiting = waiting.filter(function (p) {
         return fourIds.indexOf(p.id) === -1;
@@ -495,6 +585,7 @@
     state.partnerHistory = ph;
     state.opponentHistory = oh;
     state.recentPartners = recent;
+    state.recentOpponents = recentOpp;
     state.courts = newCourts;
     state.matchCounts = newMatchCounts;
     state.history = [];
@@ -538,11 +629,17 @@
       return;
     }
 
+    var ratingSnapshot = {};
+    finished.teamA.concat(finished.teamB).forEach(function (p) {
+      ratingSnapshot[p.id] = p.rating !== undefined ? p.rating : STARTING_RATING;
+    });
+
     state.lastFinish = {
       ci: ci,
       court: finished,
       benchOrder: Object.assign({}, state.benchOrder),
       turnCounter: state.turnCounter,
+      ratingSnapshot: ratingSnapshot,
     };
 
     var counter = state.turnCounter;
@@ -550,6 +647,16 @@
       state.benchOrder[p.id] = counter;
     });
     counter += 1;
+
+    var delta = ratingDelta(scoreA, scoreB);
+    var winningTeam = scoreA > scoreB ? finished.teamA : finished.teamB;
+    var losingTeam = scoreA > scoreB ? finished.teamB : finished.teamA;
+    winningTeam.forEach(function (p) {
+      p.rating = round2((p.rating !== undefined ? p.rating : STARTING_RATING) + delta);
+    });
+    losingTeam.forEach(function (p) {
+      p.rating = round2((p.rating !== undefined ? p.rating : STARTING_RATING) - delta);
+    });
 
     state.history.unshift({
       court: ci,
@@ -577,6 +684,12 @@
     state.history.shift();
     state.benchOrder = lf.benchOrder;
     state.turnCounter = lf.turnCounter;
+    if (lf.ratingSnapshot) {
+      Object.keys(lf.ratingSnapshot).forEach(function (id) {
+        var p = state.players.filter(function (pl) { return pl.id === id; })[0];
+        if (p) p.rating = lf.ratingSnapshot[id];
+      });
+    }
     delete state.confirmState[lf.ci];
     state.lastFinish = null;
     render();
@@ -601,8 +714,9 @@
     var ph = Object.assign({}, state.partnerHistory);
     var oh = Object.assign({}, state.opponentHistory);
     var recent = state.recentPartners.slice();
+    var recentOpp = state.recentOpponents.slice();
 
-    var result = resolveMatch(waiting, gp, state.benchOrder, ph, oh, recent);
+    var result = resolveMatch(waiting, gp, state.benchOrder, ph, oh, recent, recentOpp);
     var four = result.four;
     var split = result.split;
     four.forEach(function (p) {
@@ -614,9 +728,11 @@
     ph[kB] = (ph[kB] || 0) + 1;
     recent.unshift(kA, kB);
     recent = recent.slice(0, RECENT_LIMIT);
-    crossPairKeys(split.teamA, split.teamB).forEach(function (k) {
+    var crossKeys = crossPairKeys(split.teamA, split.teamB);
+    crossKeys.forEach(function (k) {
       oh[k] = (oh[k] || 0) + 1;
     });
+    recentOpp = crossKeys.concat(recentOpp).slice(0, RECENT_OPP_LIMIT);
 
     state.courts[ci] = { teamA: split.teamA, teamB: split.teamB };
     state.matchCounts[ci] = (state.matchCounts[ci] || 0) + 1;
@@ -624,6 +740,7 @@
     state.partnerHistory = ph;
     state.opponentHistory = oh;
     state.recentPartners = recent;
+    state.recentOpponents = recentOpp;
     state.error = "";
     delete state.confirmState[ci];
     render();
@@ -657,7 +774,8 @@
     var kB = pairKey(court.teamB[0].id, court.teamB[1].id);
     ph[kA] = Math.max(0, (ph[kA] || 0) - 1);
     ph[kB] = Math.max(0, (ph[kB] || 0) - 1);
-    crossPairKeys(court.teamA, court.teamB).forEach(function (k) {
+    var crossKeys = crossPairKeys(court.teamA, court.teamB);
+    crossKeys.forEach(function (k) {
       oh[k] = Math.max(0, (oh[k] || 0) - 1);
     });
     var recent = state.recentPartners.slice();
@@ -665,10 +783,16 @@
       var idx = recent.indexOf(k);
       if (idx !== -1) recent.splice(idx, 1);
     });
+    var recentOpp = state.recentOpponents.slice();
+    crossKeys.forEach(function (k) {
+      var idx = recentOpp.indexOf(k);
+      if (idx !== -1) recentOpp.splice(idx, 1);
+    });
     state.gamesPlayed = gp;
     state.partnerHistory = ph;
     state.opponentHistory = oh;
     state.recentPartners = recent;
+    state.recentOpponents = recentOpp;
     state.matchCounts[ci] = Math.max(0, (state.matchCounts[ci] || 1) - 1);
     state.courts[ci] = null;
     delete state.confirmState[ci];
@@ -701,6 +825,7 @@
     state.partnerHistory = {};
     state.opponentHistory = {};
     state.recentPartners = [];
+    state.recentOpponents = [];
     state.benched = {};
     state.error = "";
     state.confirmState = {};
@@ -799,7 +924,7 @@
         '</svg>' +
         '<div>' +
           '<h1 class="app-title">Open Play Generator</h1>' +
-          '<p class="app-subtitle">Created by draiyned.</p>' +
+          '<p class="app-subtitle">Created By draiyned.</p>' +
         '</div>' +
       '</div>'
     );
@@ -1024,33 +1149,23 @@
     );
   }
 
-  // Rating step per point of margin, capped the same way the source table
-  // tops out at ±11 points -> ±0.11: any larger blowout still only moves a
-  // player's rating by the same capped amount.
-  var RATING_STEP = 0.01;
-  var RATING_CAP_POINTS = 11;
-  // Starting base rating by skill level, indexed same as SKILL_LABELS/SKILL_NAMES:
-  // [Unrated, Beginner, Low Novice, High Novice, Low Intermediate, High Intermediate]
-  var SKILL_BASE_RATING = [2.0, 2.0, 2.0, 3.0, 3.0, 3.0];
-
   function computeStandings() {
     var stats = {};
     state.players.forEach(function (p) {
-      var base = SKILL_BASE_RATING[p.skill || 0];
-      if (base === undefined) base = SKILL_BASE_RATING[0];
-      stats[p.id] = { id: p.id, name: p.name, matches: 0, wins: 0, losses: 0, pf: 0, pa: 0, rating: base };
+      stats[p.id] = {
+        id: p.id, name: p.name, matches: 0, wins: 0, losses: 0, pf: 0, pa: 0,
+        rating: p.rating !== undefined ? p.rating : STARTING_RATING,
+      };
     });
     state.history.forEach(function (h) {
       var aWon = h.winner === "A";
-      var margin = Math.min(Math.abs(h.scoreA - h.scoreB), RATING_CAP_POINTS);
-      var ratingDelta = margin * RATING_STEP;
       h.teamA.forEach(function (p) {
         var s = stats[p.id];
         if (!s) return;
         s.matches += 1;
         s.pf += h.scoreA;
         s.pa += h.scoreB;
-        if (aWon) { s.wins += 1; s.rating += ratingDelta; } else { s.losses += 1; s.rating -= ratingDelta; }
+        if (aWon) s.wins += 1; else s.losses += 1;
       });
       h.teamB.forEach(function (p) {
         var s = stats[p.id];
@@ -1058,15 +1173,13 @@
         s.matches += 1;
         s.pf += h.scoreB;
         s.pa += h.scoreA;
-        if (aWon) { s.losses += 1; s.rating -= ratingDelta; } else { s.wins += 1; s.rating += ratingDelta; }
+        if (aWon) s.losses += 1; else s.wins += 1;
       });
     });
     var list = Object.keys(stats).map(function (id) { return stats[id]; });
     list.forEach(function (s) {
       s.diff = s.pf - s.pa;
       s.winRate = s.matches > 0 ? s.wins / s.matches : 0;
-      // avoid floating point noise like 0.30000000000000004
-      s.rating = Math.round(s.rating * 100) / 100;
     });
     // Rank by wins, then win rate, then point differential, then name —
     // point differential is what keeps players with identical win/loss
@@ -1074,7 +1187,6 @@
     list.sort(function (a, b) {
       if (b.wins !== a.wins) return b.wins - a.wins;
       if (b.winRate !== a.winRate) return b.winRate - a.winRate;
-      if (b.rating !== a.rating) return b.rating - a.rating;
       if (b.diff !== a.diff) return b.diff - a.diff;
       return a.name.localeCompare(b.name);
     });
@@ -1085,8 +1197,6 @@
     var pct = Math.round(s.winRate * 100);
     var diffText = (s.diff > 0 ? "+" : "") + s.diff;
     var diffClass = s.diff > 0 ? "pos" : (s.diff < 0 ? "neg" : "");
-    var ratingText = (s.rating > 0 ? "+" : "") + s.rating.toFixed(2);
-    var ratingClass = s.rating > 0 ? "pos" : (s.rating < 0 ? "neg" : "");
     return (
       '<div class="standings-row">' +
         '<span class="standings-rank">' + rank + '</span>' +
@@ -1095,7 +1205,7 @@
         '<span class="standings-matches">' + s.matches + '</span>' +
         '<span class="standings-pct">' + pct + '%</span>' +
         '<span class="standings-diff ' + diffClass + '">' + diffText + '</span>' +
-        '<span class="standings-rating ' + ratingClass + '">' + ratingText + '</span>' +
+        '<span class="standings-rating">' + s.rating.toFixed(2) + '</span>' +
       '</div>'
     );
   }
@@ -1293,6 +1403,7 @@
         partnerHistory: state.partnerHistory,
         opponentHistory: state.opponentHistory,
         recentPartners: state.recentPartners,
+        recentOpponents: state.recentOpponents,
         lockedPairs: state.lockedPairs,
         benched: state.benched,
         history: state.history,
